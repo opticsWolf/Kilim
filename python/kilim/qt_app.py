@@ -1128,10 +1128,21 @@ class KilimWindow(FramelessLaceMainWindow):
         self.manager = DockManager(self)
         # Frameless floats keep the plain Lace title bar (no menus — those
         # live in the main window's chrome only).
-        from lace import TitleBarMode
+        from lace import DockThemeBridge, TitleBarMode
 
         self.manager.title_bar_mode = TitleBarMode.custom
         self.manager.floating_title_bar = LaceStandardTitleBar
+        # Top-level popups (dock tab menus, pane context menus) read the
+        # application palette, not the dock root's — without the bridge
+        # they stay on the system palette while the bar is themed.
+        self.theme_bridge = DockThemeBridge()
+        # Explicit, after the manager: keeps the title bar on top.
+        self.setCentralWidget(self.manager._root)
+        if self.windowIcon().isNull():
+            from PySide6.QtWidgets import QStyle
+
+            fallback = self.style().standardIcon(QStyle.SP_TitleBarMenuButton)
+            self.setWindowIcon(fallback)
         # Both sidebars exist from the start: title-bar pin buttons appear
         # and explicit pin actions always have a target.
         self.manager.sidebar_manager.add_sidebar(DockWidgetArea.left)
@@ -1592,6 +1603,7 @@ def main(argv: list[str] | None = None) -> int:
     layout = argv[0] if len(argv) > 0 else "layouts/default.json"
     persp = argv[1] if len(argv) > 1 else None
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")  # frameless chrome + themed QSS need it
     win = KilimWindow(layout, persp)
     win.show()
     return app.exec()

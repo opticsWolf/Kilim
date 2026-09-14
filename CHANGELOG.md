@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.59: title-bar demo parity — DockThemeBridge (themed popups), Fusion style, explicit central widget, fallback window icon.
 - v0.1.58: frameless window with the menus embedded in a custom title bar (Lace demo pattern) — icon + Kilim title, then Views/Terminal/Themes; bar re-themes with the dock theme; floats keep the plain Lace bar.
 - v0.1.57: reverted the darker dock gaps — all chrome back to stock Lace derivation.
 - v0.1.55: stitch-pty 0.8.0 — event log now capped at MAX_EVENTS (1024, drop-oldest) upstream, so the TUI drain is belt-and-braces; no integration changes needed, full suite green.
