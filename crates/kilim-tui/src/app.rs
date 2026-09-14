@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use kilim_core::Session;
 
 pub struct App {
@@ -125,6 +125,11 @@ impl App {
             self.sync_sizes().await;
             if event::poll(std::time::Duration::from_millis(50))? {
                 if let Event::Key(k) = event::read()? {
+                    // Windows sends Press + Release per stroke: act on
+                    // Press (and Repeat for held keys) or input doubles.
+                    if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                        continue;
+                    }
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
                     match k.code {

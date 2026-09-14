@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.49: TUI no longer doubles key input — the key handler ignored event kind, so Windows Press + Release both wrote to the PTY; only Press/Repeat act now.
 
 - v0.1.0: layout model, syntect highlight, TUI shell+file panes, Py surface.
 - v0.1.1: Qt window â€” `python/kilim/qt_app.py` hosts layout.json in Lace docks
