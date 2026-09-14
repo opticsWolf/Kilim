@@ -289,7 +289,7 @@ def test_themes_menu_switches_and_repaints():
     before = open(layout_file, encoding="utf-8").read()
     app, w = _window()
     try:
-        menus = {a.text(): a.menu() for a in w.menuBar().actions()}
+        menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
         assert "&Themes" in menus, sorted(menus)
         subs = {a.text(): a.menu() for a in menus["&Themes"].actions() if a.menu()}
         assert "Code (Qt + TUI)" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
@@ -418,7 +418,7 @@ def test_sidebars_exist_for_titlebar_pins():
     try:
         sb = w.manager.sidebar_manager
         assert {a for a in sb._sidebars} == {DockWidgetArea.left, DockWidgetArea.right}
-        menus = {a.text() for a in w.menuBar().actions()}
+        menus = {a.text() for a in w.titleBar.menu_bar.actions()}
         assert "&Pin" not in menus
     finally:
         w.close()

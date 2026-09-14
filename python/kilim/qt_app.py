@@ -17,7 +17,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QPlainTextEdit, QScrollBar, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QPlainTextEdit, QScrollBar, QTextBrowser, QVBoxLayout, QWidget
+
+from lace.dock_styled import DockStyled
+from lace.dock_theme import DockStyleCategory
+from lace.frameless_window import FramelessLaceMainWindow, LaceStandardTitleBar
 
 from kilim import CoreSession
 from kilim import perspective as perspectives
@@ -977,9 +981,128 @@ class MarkdownPane(QWidget):
         return text
 
 
-class KilimWindow(QMainWindow):
+class KilimTitleBar(LaceStandardTitleBar, DockStyled):
+    """Lace title bar with the Kilim menu bar embedded in the chrome.
+
+    VS Code-style unified bar: icon + Kilim title, then Views/Terminal/
+    Themes menus, then the window buttons. The menu bar is transparent so
+    the bar's own themed background shows through; popups pull their
+    colors from the same dock-theme tokens. Follows the Lace
+    `demo_app_custom_titlebar_menus` pattern (menus sit after our title
+    instead of replacing it like the demo)."""
+
+    STYLE_CATEGORIES = (DockStyleCategory.TITLE_BAR, DockStyleCategory.SIDEBAR, DockStyleCategory.CORE)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QMenuBar
+
+        self.menu_bar = QMenuBar(self)
+        # Same height as the bar: one continuous surface, items centered.
+        self.menu_bar.setFixedHeight(self.height())
+        # Base layout: stretch, icon, title, stretch, buttons — menus go
+        # after the title, before the middle stretch.
+        self.hBoxLayout.insertWidget(3, self.menu_bar, 0, Qt.AlignVCenter)
+        self._init_dock_style()
+
+    def refresh_style(self):
+        """Theme the embedded menu bar from the active dock theme."""
+        from lace.dock_theme import DockStyleCategory
+        from lace.frameless_titlebar import _color_hex
+
+        sm = getattr(self, "_style_mgr", None)
+        if sm is None:
+            return
+        bg = sm.get(DockStyleCategory.SIDEBAR, "bg_color") or sm.get(
+            DockStyleCategory.TITLE_BAR, "bg_normal"
+        )
+        text = sm.get(DockStyleCategory.TITLE_BAR, "text_normal")
+        hover_bg = sm.get(DockStyleCategory.TITLE_BAR, "button_hover_bg")
+        border = sm.get(DockStyleCategory.TITLE_BAR, "border_normal")
+        bg_hex = _color_hex(bg) if bg else "transparent"
+        text_hex = _color_hex(text) if text else "#cccccc"
+        hover_hex = _color_hex(hover_bg) if hover_bg else "#555555"
+        border_hex = _color_hex(border) if border else hover_hex
+        # 7px vertical padding centers a default item inside the 32px bar.
+        self.menu_bar.setStyleSheet(f"""
+            QMenuBar {{
+                background: transparent;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }}
+            QMenuBar::item {{
+                background: transparent;
+                color: {text_hex};
+                padding: 7px 12px;
+                margin: 0px;
+                border: none;
+            }}
+            QMenuBar::item:selected {{
+                background: {hover_hex};
+            }}
+            QMenuBar::item:pressed {{
+                background: {hover_hex};
+            }}
+            QMenu {{
+                background: {bg_hex};
+                color: {text_hex};
+                border: 1px solid {border_hex};
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 4px 16px;
+                background: transparent;
+            }}
+            QMenu::item:selected {{
+                background: {hover_hex};
+            }}
+            QMenu::separator {{
+                background: {border_hex};
+                height: 1px;
+                margin: 4px 8px;
+            }}
+        """)
+
+    def paintEvent(self, event):
+        """Solid theme fill first: the qframeless base does not always
+        render the QSS background, so the menus and surroundings share
+        the exact same color."""
+        from PySide6.QtGui import QColor, QPainter
+
+        from lace.dock_theme import DockStyleCategory
+        from lace.frameless_titlebar import _color_hex
+
+        try:
+            sm = self._style_mgr
+            bg = sm.get(DockStyleCategory.SIDEBAR, "bg_color") or sm.get(
+                DockStyleCategory.TITLE_BAR, "bg_normal"
+            )
+        except (AttributeError, RuntimeError):
+            bg = None
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(_color_hex(bg)) if bg else QColor("#1e1e1e"))
+        painter.end()
+        super().paintEvent(event)
+
+    def canDrag(self, pos) -> bool:
+        """No window-drag from menus or buttons (else a menu press could
+        start an OS move loop on some platforms)."""
+        from PySide6.QtWidgets import QAbstractButton, QMenu, QMenuBar
+
+        child = self.childAt(pos)
+        while child is not None and child is not self:
+            if isinstance(child, (QMenuBar, QMenu, QAbstractButton)):
+                return False
+            child = child.parent()
+        return super().canDrag(pos)
+
+
+class KilimWindow(FramelessLaceMainWindow):
     def __init__(self, layout_path: str, perspective_path: str | None = None):
-        super().__init__()
+        # Frameless chrome with the menus embedded in the title bar.
+        super().__init__(title_bar=KilimTitleBar)
         from lace import DockManager, DockWidget
         from lace.enums import DockWidgetArea
 
@@ -1003,6 +1126,12 @@ class KilimWindow(QMainWindow):
         self.setWindowTitle("Kilim")
         self.resize(1200, 800)
         self.manager = DockManager(self)
+        # Frameless floats keep the plain Lace title bar (no menus — those
+        # live in the main window's chrome only).
+        from lace import TitleBarMode
+
+        self.manager.title_bar_mode = TitleBarMode.custom
+        self.manager.floating_title_bar = LaceStandardTitleBar
         # Both sidebars exist from the start: title-bar pin buttons appear
         # and explicit pin actions always have a target.
         self.manager.sidebar_manager.add_sidebar(DockWidgetArea.left)
@@ -1158,7 +1287,7 @@ class KilimWindow(QMainWindow):
 
         Closing the last dock leaves an empty window; these actions are the
         way back (Lace re-docks on toggle_view(True))."""
-        views = self.menuBar().addMenu("&Views")
+        views = self.titleBar.menu_bar.addMenu("&Views")
         for pid, dock in self.pane_docks.items():
             action = dock.toggle_view_action()
             action.setText(dock.windowTitle())
@@ -1168,7 +1297,7 @@ class KilimWindow(QMainWindow):
         show_all.triggered.connect(self.restore_all_panes)
         reset = views.addAction("Reset Layout")
         reset.triggered.connect(self.reset_layout)
-        terminal = self.menuBar().addMenu("&Terminal")
+        terminal = self.titleBar.menu_bar.addMenu("&Terminal")
         shells = self._shell_options()
         if not shells:
             none = terminal.addAction("No shells found")
@@ -1193,7 +1322,7 @@ class KilimWindow(QMainWindow):
 
         from kilim import list_themes
 
-        themes = self.menuBar().addMenu("&Themes")
+        themes = self.titleBar.menu_bar.addMenu("&Themes")
 
         # Lace dock chrome: the Kilim group only (flat, radio-checked).
         # Stock Lace presets stay out — the app exposes Kilim chrome.
@@ -1387,7 +1516,7 @@ class KilimWindow(QMainWindow):
         self.pane_docks[pid] = dock
         self.term_panes[pid] = inner
         inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
-        views = self.menuBar().actions()[0].menu()
+        views = self.titleBar.menu_bar.actions()[0].menu()
         views.insertAction(views.actions()[0], dock.toggle_view_action())
         inner.view.setFocus()
 

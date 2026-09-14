@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.58: frameless window with the menus embedded in a custom title bar (Lace demo pattern) — icon + Kilim title, then Views/Terminal/Themes; bar re-themes with the dock theme; floats keep the plain Lace bar.
 - v0.1.57: reverted the darker dock gaps — all chrome back to stock Lace derivation.
 - v0.1.55: stitch-pty 0.8.0 — event log now capped at MAX_EVENTS (1024, drop-oldest) upstream, so the TUI drain is belt-and-braces; no integration changes needed, full suite green.
 - v0.1.54: stitch-pty 0.7.6 — BEL flag + event log + dirty rows consumed: bell flashes the tab dot (1.5s), Qt repaint driven by the real dirty set (my snapshot-diff deleted), titles deliberately not synced (shells retitle every prompt), TUI drains the event log per frame so it cannot grow unbounded.
