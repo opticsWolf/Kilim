@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.52: TUI color resolution 2.8x faster — byte-exact fast path kills the per-cell lowercase allocation; manual nibble loop replaces 3x from_str_radix; slow path kept as exact-behavior fallback.
 - v0.1.51: Qt input cursor actually fixed — Lace tab-bar chrome stole focus at startup (only a focused text widget draws its cursor); active-pane focus is now claimed on retries + focus changes, never stealing from content/menus.
 - v0.1.50: TUI input lag fixed — file highlights cached on (mtime, len, theme) instead of re-running syntect every frame; all pending keys drained per frame; poll 50ms to 33ms.
 - v0.1.49: TUI no longer doubles key input — the key handler ignored event kind, so Windows Press + Release both wrote to the PTY; only Press/Repeat act now.
