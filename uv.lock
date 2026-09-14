@@ -22,7 +22,7 @@ wheels = [
 
 [[package]]
 name = "kilim-tui"
-version = "0.1.46"
+version = "0.1.52"
 source = { editable = "." }
 
 [package.optional-dependencies]

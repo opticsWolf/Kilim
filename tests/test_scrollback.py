@@ -83,8 +83,9 @@ def test_wheel_leaves_follow_and_keypress_returns():
         app.processEvents()
 
 
-def test_selection_freezes_paint_and_copies():
-    """Selecting holds rebuilds; Ctrl+Shift+C copies; Esc resumes."""
+def test_selection_survives_repaints_and_copies():
+    """Selection is anchored to history: paints continue underneath,
+    the selection follows its content; Ctrl+Shift+C copies; Esc clears."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QTextCursor
     from PySide6.QtWidgets import QApplication
@@ -101,23 +102,21 @@ def test_selection_freezes_paint_and_copies():
         cur.movePosition(QTextCursor.Start)
         cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 10)
         term.view.setTextCursor(cur)
-        term._selecting = True
-        frozen = term._render_count
+        wanted = term.view.textCursor().selectedText()
+        assert wanted, "expected selectable shell output"
         for _ in range(10):
             app.processEvents()
             time.sleep(0.06)
-        assert term._render_count == frozen  # paints held
-        assert term.view.textCursor().hasSelection()  # selection survived
+        # Paints continued (no freeze) yet the selection survived.
+        assert term.view.textCursor().hasSelection()
+        assert term.view.textCursor().selectedText() == wanted
         assert term._copy_selection() is True
         clip = QApplication.clipboard().text()
         assert len(clip) > 0
-        # Escape clears + resumes.
+        # Escape clears.
         term.on_key(_key(Qt.Key_Escape))
-        assert term._selecting is False
-        for _ in range(10):
-            app.processEvents()
-            time.sleep(0.06)
-        assert term._render_count >= frozen  # resumed (idle-skip may hold)
+        assert not term.view.textCursor().hasSelection()
+        assert term._sel is None
     finally:
         w.close()
         app.processEvents()
@@ -171,7 +170,7 @@ def test_right_click_paste_reaches_shell():
         for _ in range(40):
             app.processEvents()
             time.sleep(0.06)
-            total, start, cells, _cursor = w.bridge.call(
+            total, start, cells, _cursor, _modes = w.bridge.call(
                 lambda: w.bridge.core.snapshot_term("term1", 60, None)
             )
             blob = "".join("".join(t for t, _, _, _ in row) for row in cells)
@@ -492,6 +491,132 @@ def test_pane_focus_reclaimed_from_chrome():
         app.processEvents()
         assert QApplication.focusWidget() is view
         assert view.hasFocus()
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_snapshot_carries_dec_modes():
+    """snapshot_term reports app-cursor/bracketed/mouse/sgr/alt flags."""
+    app, w = _window()
+    try:
+        total, start, cells, cursor, modes = w.bridge.call(
+            lambda: w.bridge.core.snapshot_term("term1", 10, None)
+        )
+        app_cursor, bracketed, mouse, sgr, alt = modes
+        assert isinstance(app_cursor, bool) and isinstance(mouse, int)
+        assert mouse == 0 and alt is False  # plain PowerShell: no modes
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_arrow_and_mouse_encodings():
+    from PySide6.QtCore import Qt
+
+    from kilim.qt_app import (
+        _arrow_seq,
+        _char_to_term_col,
+        _sgr_mouse,
+        _term_col_to_char,
+        _x10_mouse,
+    )
+
+    assert _arrow_seq(Qt.Key_Up, False) == b"\x1b[A"
+    assert _arrow_seq(Qt.Key_Up, True) == b"\x1bOA"
+    assert _arrow_seq(Qt.Key_Home, True) == b"\x1bOH"
+    assert _arrow_seq(Qt.Key_End, False) == b"\x1b[F"
+    assert _arrow_seq(Qt.Key_A, False) is None
+    assert _sgr_mouse(0, 5, 10, True) == b"\x1b[<0;5;10M"
+    assert _sgr_mouse(3, 5, 10, False) == b"\x1b[<3;5;10m"
+    assert _sgr_mouse(64, 1, 1, True) == b"\x1b[<64;1;1M"
+    assert _x10_mouse(0, 5, 10) == bytes((0x1B, ord("M"), 32, 37, 42))
+    # Wide chars: 中 is 2 cells; combining mark is 0.
+    assert _term_col_to_char("a中b", 0) == 0
+    assert _term_col_to_char("a中b", 1) == 1
+    assert _term_col_to_char("a中b", 3) == 2
+    assert _term_col_to_char("a中b", 4) == 3
+    assert _char_to_term_col("a中b", 2) == 3
+    assert _char_to_term_col("é", 2) == 1
+
+
+def _fake_snap(rows, start=0, total=None, cursor=(0, 0)):
+    cells = [[(t, "default", "default", 0) for t in row] for row in rows]
+    return {
+        "cells": cells,
+        "cursor": cursor,
+        "start": start,
+        "total": total if total is not None else len(rows),
+        "rows": len(rows),
+        "modes": {"app_cursor": False, "bracketed": False, "mouse": 0, "sgr": False, "alt": False},
+    }
+
+
+def test_incremental_repaint_touches_one_row():
+    """Dirty-region paint: one changed row = one more frame, rest intact."""
+    from PySide6.QtGui import QTextCursor
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        rows = [["aaa", "bbb"], ["ccc", "ddd"], ["eee", "fff"]]
+        term._render(_fake_snap(rows, total=10))
+        base = term._render_count
+        assert term.view.document().findBlockByNumber(1).text() == "cccddd"
+        changed = [["aaa", "bbb"], ["CCC", "ddd"], ["eee", "fff"]]
+        term._render(_fake_snap(changed, total=11))
+        assert term._render_count == base + 1
+        assert term.view.document().findBlockByNumber(1).text() == "CCCddd"
+        assert term.view.document().findBlockByNumber(0).text() == "aaabbb"
+        # Identical re-render: idle, no touch.
+        term._render(_fake_snap(changed, total=11))
+        assert term._render_count == base + 1
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_selection_follows_scrolled_content():
+    """Selection anchored to absolute lines survives scrolling output."""
+    from PySide6.QtGui import QTextCursor
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._render(_fake_snap([["aa", "bb"], ["cc", "dd"], ["ee", "ff"]]))
+        doc = term.view.document()
+        c = QTextCursor(doc)
+        c.setPosition(doc.findBlockByNumber(1).position())
+        c.setPosition(doc.findBlockByNumber(1).position() + 4, QTextCursor.KeepAnchor)
+        term.view.setTextCursor(c)
+        assert term.view.textCursor().selectedText() == "ccdd"
+        # Same content scrolled up one (start 0 -> 1), plus a fresh row.
+        term._render(_fake_snap([["cc", "dd"], ["ee", "ff"], ["gg", "hh"]], start=1, total=4))
+        assert term.view.textCursor().hasSelection()
+        assert term.view.textCursor().selectedText() == "ccdd"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_hidden_pane_badges_on_output():
+    """Output while hidden dots the tab; showing clears it."""
+    app, w = _window()
+    try:
+        term = _term(w)
+        dock = w.pane_docks["term1"]
+        rows = [["aaa"], ["bbb"], ["ccc"]]
+        term._render(_fake_snap(rows, total=10))  # visible: baseline, no dot
+        assert "●" not in dock.windowTitle()
+        dock.hide()
+        app.processEvents()
+        assert not term.view.isVisible()
+        term._render(_fake_snap(rows, total=11))  # hidden + growth -> dot
+        assert "●" in dock.windowTitle()
+        dock.show()
+        app.processEvents()
+        term._render(_fake_snap(rows, total=11))  # visible -> cleared
+        assert "●" not in dock.windowTitle()
     finally:
         w.close()
         app.processEvents()

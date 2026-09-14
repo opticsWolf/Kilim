@@ -104,6 +104,28 @@ impl App {
         let _ = self.session.write_term(&active, data).await;
     }
 
+    /// Cursor keys in CSI vs SS3 form per the pane's DECCKM flag.
+    async fn send_app_cursor(&mut self, code: KeyCode) {
+        let active = self.session.layout.active.clone();
+        let app = self.session.term_dec_mode(&active, 1).await.unwrap_or(false);
+        let seq: &[u8] = match (code, app) {
+            (KeyCode::Up, false) => b"\x1b[A",
+            (KeyCode::Up, true) => b"\x1bOA",
+            (KeyCode::Down, false) => b"\x1b[B",
+            (KeyCode::Down, true) => b"\x1bOB",
+            (KeyCode::Right, false) => b"\x1b[C",
+            (KeyCode::Right, true) => b"\x1bOC",
+            (KeyCode::Left, false) => b"\x1b[D",
+            (KeyCode::Left, true) => b"\x1bOD",
+            (KeyCode::Home, false) => b"\x1b[H",
+            (KeyCode::Home, true) => b"\x1bOH",
+            (KeyCode::End, false) => b"\x1b[F",
+            (KeyCode::End, true) => b"\x1bOF",
+            _ => return,
+        };
+        self.send(seq).await;
+    }
+
     /// Sync drawn sizes -> PTY winsize. Extracted for tests: `render`
     /// records inner sizes into `self.sizes`; this pushes changed ones
     /// to the pty and commits dims only on success (failures retry).
@@ -219,12 +241,12 @@ impl App {
                         KeyCode::Enter => self.send(b"\r").await,
                         KeyCode::Backspace => self.send(b"\x7f").await,
                         KeyCode::Delete => self.send(b"\x1b[3~").await,
-                        KeyCode::Up => self.send(b"\x1b[A").await,
-                        KeyCode::Down => self.send(b"\x1b[B").await,
-                        KeyCode::Right => self.send(b"\x1b[C").await,
-                        KeyCode::Left => self.send(b"\x1b[D").await,
-                        KeyCode::Home => self.send(b"\x1b[H").await,
-                        KeyCode::End => self.send(b"\x1b[F").await,
+                        // Cursor keys follow DECCKM: applications (vim, less)
+                        // request SS3 (\x1bO) instead of CSI (\x1b[).
+                        KeyCode::Up | KeyCode::Down | KeyCode::Right | KeyCode::Left
+                        | KeyCode::Home | KeyCode::End => {
+                            self.send_app_cursor(k.code).await;
+                        }
                         KeyCode::Esc => break 'main,
                         _ => {}
                     }

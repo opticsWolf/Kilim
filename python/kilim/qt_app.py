@@ -239,6 +239,74 @@ class Bridge:
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 
+def _char_width(ch: str) -> int:
+    """Terminal cell width of one character (approximation: W/F = 2,
+    combining = 0, else 1). Qt lays out by glyphs; the PTY counts cells —
+    this maps between the two for cursor/selection placement."""
+    import unicodedata
+
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _term_col_to_char(text: str, col: int) -> int:
+    """Terminal cell column -> Qt character offset within the line."""
+    ci = ti = 0
+    while ti < col and ci < len(text):
+        ti += _char_width(text[ci])
+        ci += 1
+    return ci
+
+
+def _char_to_term_col(text: str, ci: int) -> int:
+    """Qt character offset -> terminal cell column."""
+    return sum(_char_width(c) for c in text[:ci])
+
+
+def _sgr_mouse(btn: int, col: int, row: int, press: bool) -> bytes:
+    """SGR (1006) mouse report. col/row are 1-based terminal cells."""
+    return f"\x1b[<{btn};{col};{row}{'M' if press else 'm'}".encode("ascii")
+
+
+def _x10_mouse(btn: int, col: int, row: int) -> bytes:
+    """Legacy X10 mouse report (no release event exists here)."""
+    col = min(max(col, 1), 223)
+    row = min(max(row, 1), 223)
+    return bytes((0x1B, ord('M'), 32 + btn, 32 + col, 32 + row))
+
+
+def _modes_dict(m) -> dict:
+    """Snapshot modes 5-tuple -> named dict (stable defaults)."""
+    try:
+        app_cursor, bracketed, mouse, sgr, alt = m
+    except (TypeError, ValueError):
+        app_cursor, bracketed, mouse, sgr, alt = (False, False, 0, False, False)
+    return {
+        "app_cursor": bool(app_cursor),
+        "bracketed": bool(bracketed),
+        "mouse": int(mouse or 0),
+        "sgr": bool(sgr),
+        "alt": bool(alt),
+    }
+
+
+def _arrow_seq(key, app_cursor: bool) -> bytes | None:
+    """Cursor-key bytes: SS3 (\\x1bO) in application mode, CSI otherwise."""
+    from PySide6.QtCore import Qt
+
+    table = {
+        Qt.Key_Up: (b"\x1b[A", b"\x1bOA"),
+        Qt.Key_Down: (b"\x1b[B", b"\x1bOB"),
+        Qt.Key_Right: (b"\x1b[C", b"\x1bOC"),
+        Qt.Key_Left: (b"\x1b[D", b"\x1bOD"),
+        Qt.Key_Home: (b"\x1b[H", b"\x1bOH"),
+        Qt.Key_End: (b"\x1b[F", b"\x1bOF"),
+    }
+    pair = table.get(key)
+    return pair[1] if pair and app_cursor else (pair[0] if pair else None)
+
+
 class _TermView(QPlainTextEdit):
     """Paint surface. Forwards gestures to the owning TerminalPane."""
 
@@ -258,14 +326,21 @@ class _TermView(QPlainTextEdit):
         self._owner.on_wheel(e)
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._owner._selecting = True
+        if self._owner._send_mouse("press", e):
+            return  # app owns the mouse (tracking mode): no selection
         super().mousePressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        if self._owner._send_mouse("move", e):
+            return
+        super().mouseMoveEvent(e)
+
     def mouseReleaseEvent(self, e):
+        if self._owner._mouse_active():
+            self._owner._send_mouse("release", e)
+            return
         super().mouseReleaseEvent(e)
-        if not self.textCursor().hasSelection():
-            self._owner._selecting = False
+        self._owner._capture_selection()  # persist drag, anchored to history
 
     def contextMenuEvent(self, e):
         self._owner.on_context(e.globalPos())
@@ -301,7 +376,13 @@ class TerminalPane(QWidget):
         self.bar.actionTriggered.connect(self._on_scroll_action)
         self._last_sig = None  # (total, cursor, start, rows) — idle-skip
         self._render_count = 0  # frames actually painted (tests/perf)
-        self._selecting = False  # mouse selection holds paints
+        self._paint_rows = -1  # viewport rows of the current document
+        self._paint_data: list = []  # last painted runs per visible row
+        self._cursor_at = None  # absolute (x, y) of the painted cursor
+        self._sel = None  # selection in absolute history coords (or None)
+        self._modes = _modes_dict(None)  # DEC modes from latest snapshot
+        self._seen_total = None  # activity-badge baseline
+        self._set_badge = lambda on: None  # wired by the window (tab dot)
         self._wheel_accum = 0  # fractional scroll accumulation (smooth pads)
         self._poller = QTimer(self)
         self._poller.timeout.connect(self._poll)
@@ -338,9 +419,19 @@ class TerminalPane(QWidget):
                 self._resize_pending = None
 
     async def _snapshot(self, rows: int):
-        anchor = None if self._follow else self._start
-        total, start, cells, cursor = await self.bridge.core.snapshot_term(self.pane_id, rows, anchor)
-        return {"cells": cells, "cursor": cursor, "start": start, "total": total, "rows": rows}
+        # Alt screen has no scrollback: always track the tail there.
+        anchor = None if (self._follow or self._modes.get("alt")) else self._start
+        total, start, cells, cursor, modes = await self.bridge.core.snapshot_term(
+            self.pane_id, rows, anchor
+        )
+        return {
+            "cells": cells,
+            "cursor": cursor,
+            "start": start,
+            "total": total,
+            "rows": rows,
+            "modes": _modes_dict(modes),
+        }
 
     def _grid(self) -> tuple[int, int]:
         fm = self.view.fontMetrics()
@@ -377,62 +468,230 @@ class TerminalPane(QWidget):
 
     def _render(self, snap):
         self._ensure_theme()
-        # Frozen while selecting: track history depth, skip the rebuild.
-        # _last_sig is untouched, so resume repaints on the next poll.
-        if self._selecting and self.view.textCursor().hasSelection():
-            self._total = snap["total"]
-            return
-        self._selecting = False
+        self._modes = snap.get("modes") or _modes_dict(None)
+        # Selection round-trips through absolute history coords every
+        # paint: capture Qt's selection BEFORE touching the document so
+        # output can keep flowing underneath it (no freeze).
+        self._capture_selection()
         sig = (snap["total"], snap["cursor"], snap["start"], snap["rows"])
-        if sig == self._last_sig:
-            return  # idle: same cells as last paint, skip Qt rebuild
-        self._last_sig = sig
-        self._render_count += 1
-        self._start = snap["start"]
-        self._total = snap["total"]
-        bar = self.bar
-        top = max(0, self._total - snap["rows"])
-        bar.blockSignals(True)
-        try:
-            bar.setRange(0, top)
-            bar.setPageStep(snap["rows"])
-            if not bar.isSliderDown():  # never fight an active drag
-                bar.setValue(snap["start"])
-        finally:
-            bar.blockSignals(False)
+        if sig != self._last_sig:
+            self._last_sig = sig
+            self._start = snap["start"]
+            self._total = snap["total"]
+            bar = self.bar
+            top = max(0, self._total - snap["rows"])
+            bar.blockSignals(True)
+            try:
+                bar.setRange(0, top)
+                bar.setPageStep(snap["rows"])
+                if not bar.isSliderDown():  # never fight an active drag
+                    bar.setValue(snap["start"])
+            finally:
+                bar.blockSignals(False)
+            self._paint(snap)
+        self._cursor_to(snap["cursor"], snap["start"], snap["rows"])
+        self._reapply_selection()
+        self._badges(snap)
+        self.view.viewport().setMouseTracking(self._modes.get("mouse") == 1003)
+    def _paint(self, snap):
+        """Full rebuild or dirty-region diff, then remember the rows."""
         fg0 = self.view.palette().color(self.view.foregroundRole())
         bg0 = self.view.palette().color(self.view.backgroundRole())
+        rows = snap["cells"]
+        if self._paint_rows == snap["rows"] and len(self._paint_data) == len(rows):
+            self._paint_diff(rows, fg0, bg0)  # only touched blocks relayout
+        else:
+            self._paint_full(rows, fg0, bg0)
+        self._paint_rows = snap["rows"]
+        self._paint_data = [list(r) for r in rows]
+
+    def _paint_full(self, rows, fg0, bg0):
+        """Wipe + rebuild (first paint, resize, theme switch)."""
+        self._render_count += 1
         self.view.clear()
         cur = self.view.textCursor()
         cur.beginEditBlock()  # one layout pass for the whole rebuild
         try:
-            for row in snap["cells"]:
-                # Merge adjacent same-style cells: ~2k Qt edits -> ~50-200.
-                run_text: list[str] = []
-                run_key = None
-                for text, fg, bg, attrs in row:
-                    key = (fg, bg, attrs)
-                    if key != run_key:
-                        if run_text:
-                            cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
-                            run_text = []
-                        run_key = key
-                    run_text.append(text if not (attrs & (1 << 6)) else " ")
-                if run_text:
-                    cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
+            for row in rows:
+                self._insert_runs(cur, row, fg0, bg0)
                 cur.insertBlock()
         finally:
             cur.endEditBlock()
-        # cursor (only when visible — never yanks scrolled-back view)
-        cx, cy_abs = snap["cursor"]
-        if snap["start"] <= cy_abs < snap["start"] + len(snap["cells"]):
-            pos = (cy_abs - snap["start"], cx)
-            doc = self.view.document()
-            if 0 <= pos[0] < doc.blockCount():
-                block = doc.findBlockByNumber(pos[0])
-                c = QTextCursor(block)
-                c.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor, min(pos[1], block.length() - 1))
-                self.view.setTextCursor(c)
+        self._cursor_at = None  # document is new: reposition unconditionally
+
+    def _paint_diff(self, rows, fg0, bg0):
+        """Rewrite only changed blocks (Konsole-style dirty regions)."""
+        doc = self.view.document()
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        try:
+            touched = False
+            for i, row in enumerate(rows):
+                if i < len(self._paint_data) and list(row) == self._paint_data[i]:
+                    continue
+                block = doc.findBlockByNumber(i)
+                if not block.isValid():
+                    continue
+                cur.setPosition(block.position())
+                cur.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+                self._insert_runs(cur, row, fg0, bg0)
+                touched = True
+        finally:
+            cur.endEditBlock()
+        if touched:
+            self._render_count += 1
+
+    def _insert_runs(self, cur, row, fg0, bg0):
+        """Insert one viewport row, merging adjacent same-style cells."""
+        run_text: list[str] = []
+        run_key = None
+        for text, fg, bg, attrs in row:
+            key = (fg, bg, attrs)
+            if key != run_key:
+                if run_text:
+                    cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
+                    run_text = []
+                run_key = key
+            run_text.append(text if not (attrs & (1 << 6)) else " ")
+        if run_text:
+            cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
+
+    def _cursor_to(self, cursor, start, nrows):
+        """Reposition only on move: untouched polls keep Qt's native blink."""
+        if tuple(cursor) == self._cursor_at:
+            return
+        self._cursor_at = tuple(cursor)
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return  # live drag: don't yank the selection anchor
+        cx, cy_abs = cursor
+        if not (start <= cy_abs < start + nrows):
+            return  # scrolled back: cursor out of view, leave it
+        doc = self.view.document()
+        vis = cy_abs - start
+        if not (0 <= vis < doc.blockCount()):
+            return
+        block = doc.findBlockByNumber(vis)
+        ci = _term_col_to_char(block.text(), cx)
+        c = QTextCursor(doc)
+        c.setPosition(block.position() + min(ci, len(block.text())))
+        self.view.setTextCursor(c)
+
+    def _capture_selection(self):
+        """Qt selection -> absolute history coords (survives repaints)."""
+        cur = self.view.textCursor()
+        if not cur.hasSelection():
+            return
+        doc = self.view.document()
+        s, e = cur.selectionStart(), cur.selectionEnd()
+        sb, eb = doc.findBlock(s), doc.findBlock(e)
+        a = (self._start + sb.blockNumber(),
+             _char_to_term_col(sb.text(), s - sb.position()))
+        b = (self._start + eb.blockNumber(),
+             _char_to_term_col(eb.text(), e - eb.position()))
+        self._sel = (a, b) if a <= b else (b, a)
+
+    def _reapply_selection(self):
+        """Absolute coords -> Qt selection (clamped to the viewport)."""
+        if self._sel is None:
+            return
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return  # live drag: Qt owns the in-progress selection
+        (a_line, a_col), (b_line, b_col) = self._sel
+        doc = self.view.document()
+        lo, hi = self._start, self._start + max(self._paint_rows, 0)
+        if b_line < lo or a_line >= hi:
+            if self.view.textCursor().hasSelection():  # scrolled out: drop Qt's, keep _sel
+                self.view.setTextCursor(QTextCursor(doc))
+            return
+        a_line, b_line = max(a_line, lo), min(b_line, hi - 1)
+        ab, eb = doc.findBlockByNumber(a_line - self._start), doc.findBlockByNumber(b_line - self._start)
+        if not (ab.isValid() and eb.isValid()):
+            return
+        a_pos = ab.position() + min(_term_col_to_char(ab.text(), a_col), len(ab.text()))
+        b_pos = eb.position() + min(_term_col_to_char(eb.text(), b_col), len(eb.text()))
+        c = QTextCursor(doc)
+        c.setPosition(a_pos)
+        c.setPosition(b_pos, QTextCursor.KeepAnchor)
+        self.view.setTextCursor(c)
+
+    def _mouse_active(self) -> bool:
+        """App owns the mouse (tracking mode 1000/1002/1003)."""
+        return self._modes.get("mouse", 0) != 0
+
+    def _mouse_cell(self, pos) -> tuple[int, int]:
+        """Viewport position -> 1-based (col, row) terminal cells."""
+        cur = self.view.cursorForPosition(pos)
+        block = cur.block()
+        col = _char_to_term_col(block.text(), cur.position() - block.position()) + 1
+        return (max(col, 1), block.blockNumber() + 1)
+
+    def _send_mouse(self, kind, e) -> bool:
+        """Report mouse to the app (SGR 1006, X10 fallback). True = eaten."""
+        proto = self._modes.get("mouse", 0)
+        if proto == 0:
+            return False
+        if kind == "move":
+            if proto == 1000:
+                return False
+            if proto == 1002 and e.buttons() == Qt.NoButton:
+                return False  # 1002 reports drags only; 1003 reports all motion
+        mod = 0
+        m = e.modifiers()
+        if m & Qt.ShiftModifier:
+            mod |= 4
+        if m & Qt.AltModifier:
+            mod |= 8
+        if m & Qt.ControlModifier:
+            mod |= 16
+        col, row = self._mouse_cell(e.pos())
+        if kind == "press":
+            btn = {Qt.LeftButton: 0, Qt.MiddleButton: 1, Qt.RightButton: 2}.get(e.button(), 3)
+            press, b = True, btn + mod
+        elif kind == "release":
+            press, b = False, 3 + mod
+        else:  # move
+            held = e.buttons()
+            if held & Qt.LeftButton:
+                b = 0
+            elif held & Qt.MiddleButton:
+                b = 1
+            elif held & Qt.RightButton:
+                b = 2
+            else:
+                b = 3  # 1003 hover motion
+            press, b = True, 32 + b + mod
+        if self._modes.get("sgr"):
+            data = _sgr_mouse(b, col, row, press)
+        else:
+            data = _x10_mouse(b, col, row)
+        self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
+        return True
+
+    def _send_wheel_mouse(self, pos, delta_y: int, modifiers) -> None:
+        """Wheel report at the event position (tracking apps scroll)."""
+        mod = 0
+        if modifiers & Qt.ShiftModifier:
+            mod |= 4
+        if modifiers & Qt.AltModifier:
+            mod |= 8
+        if modifiers & Qt.ControlModifier:
+            mod |= 16
+        btn = (64 if delta_y > 0 else 65) + mod
+        col, row = self._mouse_cell(pos)
+        data = _sgr_mouse(btn, col, row, True) if self._modes.get("sgr") else _x10_mouse(btn, col, row)
+        self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
+
+    def _badges(self, snap):
+        """Dot the tab when output lands while the pane is hidden."""
+        total = snap["total"]
+        if self._seen_total is None:
+            self._seen_total = total
+            return
+        if self.view.isVisible():
+            self._seen_total = total
+            self._set_badge(False)
+        elif total != self._seen_total:
+            self._set_badge(True)
 
     @staticmethod
     def _fmt(key, fg0, bg0) -> QTextCharFormat:
@@ -464,6 +723,11 @@ class TerminalPane(QWidget):
         self._poll()  # repaint now, don't wait for the timer
 
     def on_wheel(self, e):
+        if self._mouse_active():
+            # Tracking app owns the wheel (vim scrolls); no scrollback.
+            self._send_wheel_mouse(e.pos(), e.angleDelta().y(), e.modifiers())
+            e.accept()
+            return
         # Route the wheel to history offset, not the (rebuilt) document.
         # One notch (120 units) = 3 lines; fractions accumulate so precision
         # touchpads still glide instead of chunking.
@@ -487,12 +751,12 @@ class TerminalPane(QWidget):
             self._poll()  # repaint now, don't wait for the timer
         e.accept()
 
-    # ── selection: holding paint while the user selects ──
-    # The document is rebuilt every paint, so a live selection would be
-    # destroyed within one poll. Instead: selecting freezes paints (polls
-    # continue underneath; resume repaints immediately since the signature
-    # went stale). Ctrl+Shift+C copies (Ctrl+C stays \x03 for the shell).
-    # (Mouse press/release live on _TermView and set _selecting.)
+    # ── selection, anchored to absolute history (Konsole-style) ──
+    # The document is rebuilt every paint, so Qt's selection would die
+    # within one poll. Instead it round-trips through absolute history
+    # coords (_sel) on every paint: output keeps flowing underneath and
+    # the selection follows its content. Ctrl+Shift+C copies (Ctrl+C
+    # stays \x03 for the shell).
 
     def _copy_selection(self) -> bool:
         cur = self.view.textCursor()
@@ -516,7 +780,7 @@ class TerminalPane(QWidget):
         if chosen == copy_act:
             if self._copy_selection():
                 self.view.setTextCursor(QTextCursor(self.view.document()))
-                self._selecting = False
+                self._sel = None
         elif chosen == paste_act:
             self._paste_from_clipboard()
 
@@ -525,16 +789,19 @@ class TerminalPane(QWidget):
         if not text:
             return None
         self._follow = True
-        self._selecting = False
+        self._sel = None
+        data = text.encode("utf-8", "replace")
+        if self._modes.get("bracketed"):
+            data = b"\x1b[200~" + data + b"\x1b[201~"
         return self.bridge.submit(
-            lambda: self.bridge.core.write_term(self.pane_id, text.encode("utf-8", "replace"))
+            lambda: self.bridge.core.write_term(self.pane_id, data)
         )
 
     # ── input (snaps back to live tail) ──
     def on_key(self, e):
         if e.key() == Qt.Key_Escape:
             self.view.setTextCursor(QTextCursor(self.view.document()))
-            self._selecting = False
+            self._sel = None
             self._follow = True
             return
         if (e.modifiers() & Qt.ControlModifier) and (e.modifiers() & Qt.ShiftModifier) \
@@ -543,25 +810,22 @@ class TerminalPane(QWidget):
             return
         data: bytes | None = None
         t = e.text()
+        app_cursor = self._modes.get("app_cursor", False)
         if e.key() == Qt.Key_Return or e.key() == Qt.Key_Enter:
             data = b"\r"
         elif e.key() == Qt.Key_Backspace:
             data = b"\x7f"
-        elif e.key() == Qt.Key_Up:
-            data = b"\x1b[A"
-        elif e.key() == Qt.Key_Down:
-            data = b"\x1b[B"
-        elif e.key() == Qt.Key_Right:
-            data = b"\x1b[C"
-        elif e.key() == Qt.Key_Left:
-            data = b"\x1b[D"
+        elif (seq := _arrow_seq(e.key(), app_cursor)) is not None:
+            data = seq
         elif e.modifiers() & Qt.ControlModifier and t:
             data = bytes([ord(t.upper()) & 0x1F]) if len(t) == 1 else None
         elif t:
             data = t.encode("utf-8", "replace")
         if data:
             self._follow = True  # typing snaps back to the live tail
-            self._selecting = False  # ...and resumes paints
+            self._sel = None  # ...and clears the selection, like a terminal
+            if self.view.textCursor().hasSelection():
+                self.view.setTextCursor(QTextCursor(self.view.document()))
             self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
         # read-only widget: swallow (no super() call)
 
@@ -719,6 +983,7 @@ class KilimWindow(QMainWindow):
         self.term_panes: dict[str, QWidget] = {}
         self.file_panes: dict[str, QWidget] = {}
         self.md_panes: dict[str, QWidget] = {}
+        self._badge_base: dict[str, str] = {}  # un-dotted tab titles
         self.lace_theme: str | None = None
         self._kilim_by_lace = register_kilim_lace_themes()
         self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "code": {}, "md": {}}
@@ -751,6 +1016,7 @@ class KilimWindow(QMainWindow):
                 dock.set_widget(inner)
                 if kind == "term":
                     self.term_panes[pid] = inner
+                    inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
                 elif kind == "markdown":
                     self.md_panes[pid] = inner
                 else:
@@ -1092,9 +1358,26 @@ class KilimWindow(QMainWindow):
         self.manager.add_dock_widget(DockWidgetArea.left, dock)
         self.pane_docks[pid] = dock
         self.term_panes[pid] = inner
+        inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
         views = self.menuBar().actions()[0].menu()
         views.insertAction(views.actions()[0], dock.toggle_view_action())
         inner.view.setFocus()
+
+    def _badge_pane(self, pid: str, on: bool):
+        """Dot a background tab while its shell produces output (P2).
+
+        The dot lives in the dock title (Lace re-renders the tab from
+        windowTitle automatically); cleared the moment the pane shows."""
+        try:
+            dock = self.pane_docks.get(pid)
+            if dock is None:
+                return
+            base = self._badge_base.setdefault(pid, dock.windowTitle().lstrip("● "))
+            want = ("● " + base) if on else base
+            if dock.windowTitle() != want:
+                dock.setWindowTitle(want)
+        except RuntimeError:
+            pass  # closing
 
     def restore_all_panes(self):
         """Re-open every closed pane (no-op for visible ones)."""

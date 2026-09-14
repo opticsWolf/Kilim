@@ -109,14 +109,21 @@ impl TermHandle {
         self.screen.lock().await.styled_range(start, count)
     }
 
-    /// One-lock-call snapshot for bridges: (total, start, cells, cursor).
+    /// One-lock-call snapshot for bridges: (total, start, cells, cursor, modes).
     /// `anchor=None` tracks the live tail; `Some(a)` holds position clamped
     /// to the tail (scrollback). Replaces 3 round-trips with 1.
+    /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse, alt_screen).
     pub async fn snapshot_tail(
         &self,
         rows: usize,
         anchor: Option<usize>,
-    ) -> (usize, usize, Vec<Vec<(String, String, String, u8)>>, (usize, usize)) {
+    ) -> (
+        usize,
+        usize,
+        Vec<Vec<(String, String, String, u8)>>,
+        (usize, usize),
+        (bool, bool, u16, bool, bool),
+    ) {
         let screen = self.screen.lock().await;
         let total = screen.total_lines();
         let tail = total.saturating_sub(rows);
@@ -126,11 +133,25 @@ impl TermHandle {
         };
         let cells = screen.styled_range(start, rows);
         let cursor = screen.absolute_cursor();
-        (total, start, cells, cursor)
+        let mode = screen.mode();
+        let modes = (
+            mode.has_private(1),    // DECCKM: application cursor keys
+            mode.has_private(2004), // bracketed paste
+            mode.mouse_protocol(),  // 0/1000/1002/1003
+            mode.sgr_mouse(),       // 1006 SGR encoding
+            mode.is_alt_screen(),
+        );
+        (total, start, cells, cursor, modes)
     }
 
     pub async fn total_lines(&self) -> usize {
         self.screen.lock().await.total_lines()
+    }
+
+    /// Query one private DEC mode flag (1=DECCKM, 2004=bracketed, ...).
+    /// Cheap single-lock read for input paths (TUI arrows, Qt paste).
+    pub async fn dec_private(&self, mode: u16) -> bool {
+        self.screen.lock().await.mode().has_private(mode)
     }
 
     pub async fn absolute_cursor(&self) -> (usize, usize) {

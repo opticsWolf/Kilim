@@ -171,12 +171,22 @@ impl Session {
 
     /// One-call snapshot for bridges (replaces total+range+cursor trips).
     /// `anchor=None` follows the tail; `Some(a)` holds scrollback position.
+    /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse, alt_screen).
     pub async fn snapshot_term(
         &self,
         pane_id: &str,
         rows: usize,
         anchor: Option<usize>,
-    ) -> Result<(usize, usize, Vec<Vec<(String, String, String, u8)>>, (usize, usize)), String> {
+    ) -> Result<
+        (
+            usize,
+            usize,
+            Vec<Vec<(String, String, String, u8)>>,
+            (usize, usize),
+            (bool, bool, u16, bool, bool),
+        ),
+        String,
+    > {
         Ok(self.term(pane_id)?.snapshot_tail(rows, anchor).await)
     }
 
@@ -211,6 +221,11 @@ impl Session {
 
     pub async fn term_total_lines(&self, pane_id: &str) -> Result<usize, String> {
         Ok(self.term(pane_id)?.total_lines().await)
+    }
+
+    /// Private DEC mode flag for a pane (1=DECCKM app cursor keys, ...).
+    pub async fn term_dec_mode(&self, pane_id: &str, mode: u16) -> Result<bool, String> {
+        Ok(self.term(pane_id)?.dec_private(mode).await)
     }
 
     pub async fn set_term_scrollback(&self, pane_id: &str, n: usize) -> Result<(), String> {
