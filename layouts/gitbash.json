@@ -1,0 +1,56 @@
+{
+  "layout": {
+    "root": {
+      "type": "split",
+      "dir": "horizontal",
+      "ratio": 0.55,
+      "a": {
+        "type": "pane",
+        "pane_id": "term1"
+      },
+      "b": {
+        "type": "tabs",
+        "tabs": [
+          {
+            "pane_id": "code",
+            "title": "code"
+          },
+          {
+            "pane_id": "notes",
+            "title": "notes"
+          }
+        ],
+        "current": 0
+      }
+    },
+    "active": "term1",
+    "theme": "Kilim Dark",
+    "markdown_theme": "Kilim Dark"
+  },
+  "panes": [
+    {
+      "id": "term1",
+      "title": "bash",
+      "kind": "term",
+      "cmd": "C:/Program Files/Git/bin/bash.exe",
+      "args": [
+        "--login",
+        "-i"
+      ],
+      "rows": 24,
+      "cols": 80
+    },
+    {
+      "id": "code",
+      "title": "ui.rs",
+      "kind": "file",
+      "path": "crates/kilim-tui/src/ui.rs"
+    },
+    {
+      "id": "notes",
+      "title": "readme",
+      "kind": "markdown",
+      "path": "README.md"
+    }
+  ]
+}

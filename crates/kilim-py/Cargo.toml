@@ -1,0 +1,22 @@
+[package]
+name = "kilim-py"
+version = "0.1.48"
+edition = "2021"
+description = "Thin PyO3 surface for Kilim (setup B): layout + highlight over kilim-core"
+
+[lib]
+crate-type = ["cdylib"]
+name = "kilim_core"
+
+[features]
+default = []
+python = ["dep:pyo3", "dep:pyo3-async-runtimes"]
+# Opt-in: Markdown->HTML via mordant (pulls katex/mermaid — not in default wheel).
+markdown = ["kilim-core/markdown"]
+
+[dependencies]
+kilim-core = { path = "../kilim-core" }
+pyo3 = { version = "0.28", features = ["abi3-py312"], optional = true }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"], optional = true }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"

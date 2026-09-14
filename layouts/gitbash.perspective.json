@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "kilim": {
+    "tab_groups": [
+      [
+        "term1"
+      ],
+      [
+        "code",
+        "notes"
+      ]
+    ],
+    "active": "term1"
+  },
+  "lace": "{\"type\": \"LaceDockingSystem\", \"schema\": 1, \"version\": 0, \"containers\": [{\"id\": \"main\", \"is_main\": true, \"data\": {\"type\": \"Container\", \"floating\": false, \"geometry\": \"\", \"root_splitter\": {\"type\": \"Splitter\", \"orientation\": \"-\", \"count\": 2, \"sizes\": [1076, 1252], \"children\": [{\"type\": \"Area\", \"tabs\": 1, \"current\": \"term1\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"term1\", \"closed\": false}]}, {\"type\": \"Area\", \"tabs\": 2, \"current\": \"code\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"code\", \"closed\": false}, {\"type\": \"Widget\", \"name\": \"notes\", \"closed\": false}]}]}}}], \"sidebars\": {\"pinned_widgets\": {}, \"overlay_sizes\": {}, \"active_widget\": null, \"sidebar_areas\": [], \"settings\": {\"auto_show_on_hover\": true, \"animations_enabled\": true, \"keep_open\": false}}, \"container_geometries\": {}, \"widget_states\": {\"term1\": {\"closed\": false}, \"code\": {\"closed\": false}, \"notes\": {\"closed\": false}}}"
+}

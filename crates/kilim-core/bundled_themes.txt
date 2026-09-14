@@ -1,0 +1,8 @@
+# Wheel theme files to embed (stems = filename without extension).
+# ONLY these: the Kilim set's non-bat bases (see kilim_themes.rs defs).
+# Everything else in mordant's themes dir stays out — the registry ships
+# exactly the Kilim eight plus explicit user customs.
+Night Owl-color-theme.json
+tokyo-night-light-color-theme.json
+ayu-light.json
+LaserWave-color-theme.json

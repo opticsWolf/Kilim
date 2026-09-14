@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/kilim-core", "crates/kilim-tui", "crates/kilim-py"]
+resolver = "2"
