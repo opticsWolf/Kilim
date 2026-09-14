@@ -1,6 +1,6 @@
 [package]
 name = "kilim-tui"
-version = "0.1.55"
+version = "0.1.56"
 edition = "2021"
 description = "Kilim terminal frontend: ratatui multi-view over kilim-core + stitch-pty"
 

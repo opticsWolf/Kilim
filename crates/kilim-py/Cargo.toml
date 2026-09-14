@@ -1,6 +1,6 @@
 [package]
 name = "kilim-py"
-version = "0.1.55"
+version = "0.1.56"
 edition = "2021"
 description = "Thin PyO3 surface for Kilim (setup B): layout + highlight over kilim-core"
 

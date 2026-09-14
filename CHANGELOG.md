@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.56: dock-area gaps ~10% darker for dark/warm (both chassis) — splitter handle + area fill darkened as a post-build override, docks/tabs/titles untouched.
 - v0.1.55: stitch-pty 0.8.0 — event log now capped at MAX_EVENTS (1024, drop-oldest) upstream, so the TUI drain is belt-and-braces; no integration changes needed, full suite green.
 - v0.1.54: stitch-pty 0.7.6 — BEL flag + event log + dirty rows consumed: bell flashes the tab dot (1.5s), Qt repaint driven by the real dirty set (my snapshot-diff deleted), titles deliberately not synced (shells retitle every prompt), TUI drains the event log per frame so it cannot grow unbounded.
 - v0.1.53: QTermWidget lessons — P0 dirty-region repaint (only changed blocks relayout) + cursor repositioned on move only (native blink survives); P1 history-anchored selection (paints continue underneath), DECCKM app-cursor keys (Qt+TUI), bracketed paste, SGR/X10 mouse incl. wheel; P2 background-tab activity dots, wide-char cursor/selection mapping. Bell stays out: stitch-pty swallows BEL with no flag to read.
