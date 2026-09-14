@@ -171,7 +171,8 @@ impl Session {
 
     /// One-call snapshot for bridges (replaces total+range+cursor trips).
     /// `anchor=None` follows the tail; `Some(a)` holds scrollback position.
-    /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse, alt_screen).
+    /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse,
+    /// alt_screen, bell). dirty = history-absolute changed rows.
     pub async fn snapshot_term(
         &self,
         pane_id: &str,
@@ -183,11 +184,19 @@ impl Session {
             usize,
             Vec<Vec<(String, String, String, u8)>>,
             (usize, usize),
-            (bool, bool, u16, bool, bool),
+            (bool, bool, u16, bool, bool, bool),
+            Vec<usize>,
         ),
         String,
     > {
         Ok(self.term(pane_id)?.snapshot_tail(rows, anchor).await)
+    }
+
+    /// Drain a pane's event log without reading it (bounds memory for
+    /// consumers that render straight from the screen, like the TUI).
+    pub async fn drain_term_events(&self, pane_id: &str) -> Result<(), String> {
+        self.term(pane_id)?.drain_events().await;
+        Ok(())
     }
 
     fn term(&self, pane_id: &str) -> Result<Arc<TermHandle>, String> {

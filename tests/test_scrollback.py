@@ -170,7 +170,7 @@ def test_right_click_paste_reaches_shell():
         for _ in range(40):
             app.processEvents()
             time.sleep(0.06)
-            total, start, cells, _cursor, _modes = w.bridge.call(
+            total, start, cells, _cursor, _modes, _dirty = w.bridge.call(
                 lambda: w.bridge.core.snapshot_term("term1", 60, None)
             )
             blob = "".join("".join(t for t, _, _, _ in row) for row in cells)
@@ -500,12 +500,13 @@ def test_snapshot_carries_dec_modes():
     """snapshot_term reports app-cursor/bracketed/mouse/sgr/alt flags."""
     app, w = _window()
     try:
-        total, start, cells, cursor, modes = w.bridge.call(
+        total, start, cells, cursor, modes, dirty = w.bridge.call(
             lambda: w.bridge.core.snapshot_term("term1", 10, None)
         )
-        app_cursor, bracketed, mouse, sgr, alt = modes
+        app_cursor, bracketed, mouse, sgr, alt, bell = modes
         assert isinstance(app_cursor, bool) and isinstance(mouse, int)
         assert mouse == 0 and alt is False  # plain PowerShell: no modes
+        assert bell is False and isinstance(dirty, list)
     finally:
         w.close()
         app.processEvents()
@@ -540,7 +541,7 @@ def test_arrow_and_mouse_encodings():
     assert _char_to_term_col("é", 2) == 1
 
 
-def _fake_snap(rows, start=0, total=None, cursor=(0, 0)):
+def _fake_snap(rows, start=0, total=None, cursor=(0, 0), dirty=None):
     cells = [[(t, "default", "default", 0) for t in row] for row in rows]
     return {
         "cells": cells,
@@ -548,7 +549,9 @@ def _fake_snap(rows, start=0, total=None, cursor=(0, 0)):
         "start": start,
         "total": total if total is not None else len(rows),
         "rows": len(rows),
-        "modes": {"app_cursor": False, "bracketed": False, "mouse": 0, "sgr": False, "alt": False},
+        "modes": {"app_cursor": False, "bracketed": False, "mouse": 0,
+                  "sgr": False, "alt": False, "bell": False},
+        "dirty": list(dirty) if dirty else [],
     }
 
 
@@ -564,7 +567,7 @@ def test_incremental_repaint_touches_one_row():
         base = term._render_count
         assert term.view.document().findBlockByNumber(1).text() == "cccddd"
         changed = [["aaa", "bbb"], ["CCC", "ddd"], ["eee", "fff"]]
-        term._render(_fake_snap(changed, total=11))
+        term._render(_fake_snap(changed, total=11, dirty=[1]))
         assert term._render_count == base + 1
         assert term.view.document().findBlockByNumber(1).text() == "CCCddd"
         assert term.view.document().findBlockByNumber(0).text() == "aaabbb"
@@ -617,6 +620,27 @@ def test_hidden_pane_badges_on_output():
         app.processEvents()
         term._render(_fake_snap(rows, total=11))  # visible -> cleared
         assert "●" not in dock.windowTitle()
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_bell_dots_tab():
+    """A BEL dots the tab even with no new output (1.5s flash)."""
+    app, w = _window()
+    try:
+        term = _term(w)
+        dock = w.pane_docks["term1"]
+        rows = [["aaa"]]
+        term._render(_fake_snap(rows, total=10))
+        assert "●" not in dock.windowTitle()
+        dock.hide()
+        app.processEvents()
+        snap = _fake_snap(rows, total=10)
+        snap["modes"] = dict(snap["modes"])
+        snap["modes"]["bell"] = True
+        term._render(snap)
+        assert "●" in dock.windowTitle()
     finally:
         w.close()
         app.processEvents()

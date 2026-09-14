@@ -1,6 +1,6 @@
 [package]
 name = "kilim-tui"
-version = "0.1.53"
+version = "0.1.54"
 edition = "2021"
 description = "Kilim terminal frontend: ratatui multi-view over kilim-core + stitch-pty"
 
@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 kilim-core = { path = "../kilim-core", features = ["markdown"] }
-stitch-pty = "0.5.6"
 tokio = { version = "1", features = ["full"] }
 ratatui = "0.29"
 crossterm = "0.28"

@@ -8,10 +8,13 @@
       [
         "code",
         "notes"
+      ],
+      [
+        "term-new1"
       ]
     ],
     "active": "term1"
   },
-  "lace": "{\"type\": \"LaceDockingSystem\", \"schema\": 1, \"version\": 0, \"containers\": [{\"id\": \"main\", \"is_main\": true, \"data\": {\"type\": \"Container\", \"floating\": false, \"geometry\": \"\", \"root_splitter\": {\"type\": \"Splitter\", \"orientation\": \"-\", \"count\": 2, \"sizes\": [460, 733], \"children\": [{\"type\": \"Area\", \"tabs\": 1, \"current\": \"term1\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"term1\", \"closed\": false}]}, {\"type\": \"Area\", \"tabs\": 2, \"current\": \"notes\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"code\", \"closed\": false}, {\"type\": \"Widget\", \"name\": \"notes\", \"closed\": false}]}]}}}], \"sidebars\": {\"pinned_widgets\": {}, \"overlay_sizes\": {}, \"active_widget\": null, \"sidebar_areas\": [\"left\", \"right\"], \"settings\": {\"auto_show_on_hover\": true, \"animations_enabled\": true, \"keep_open\": false}}, \"container_geometries\": {}, \"widget_states\": {\"term1\": {\"closed\": false}, \"code\": {\"closed\": false}, \"notes\": {\"closed\": false}}}",
-  "lace_theme": "kilim_warm"
+  "lace": "{\"type\": \"LaceDockingSystem\", \"schema\": 1, \"version\": 0, \"containers\": [{\"id\": \"main\", \"is_main\": true, \"data\": {\"type\": \"Container\", \"floating\": false, \"geometry\": \"\", \"root_splitter\": {\"type\": \"Splitter\", \"orientation\": \"-\", \"count\": 3, \"sizes\": [620, 277, 845], \"children\": [{\"type\": \"Area\", \"tabs\": 1, \"current\": \"term-new1\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"term-new1\", \"closed\": false}]}, {\"type\": \"Area\", \"tabs\": 1, \"current\": \"term1\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"term1\", \"closed\": false}]}, {\"type\": \"Area\", \"tabs\": 2, \"current\": \"code\", \"widgets\": [{\"type\": \"Widget\", \"name\": \"code\", \"closed\": false}, {\"type\": \"Widget\", \"name\": \"notes\", \"closed\": false}]}]}}}], \"sidebars\": {\"pinned_widgets\": {}, \"overlay_sizes\": {}, \"active_widget\": null, \"sidebar_areas\": [\"left\", \"right\"], \"settings\": {\"auto_show_on_hover\": true, \"animations_enabled\": true, \"keep_open\": false}}, \"container_geometries\": {}, \"widget_states\": {\"term1\": {\"closed\": false}, \"code\": {\"closed\": false}, \"notes\": {\"closed\": false}, \"term-new1\": {\"closed\": false}}}",
+  "lace_theme": "kilim_neutral"
 }

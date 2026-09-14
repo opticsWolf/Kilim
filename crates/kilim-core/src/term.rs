@@ -33,7 +33,7 @@ impl TermHandle {
             xpixel: 0,
             ypixel: 0,
         };
-        let (backend, child) = spawn_platform(cmd, args, &env, Some(ws))
+        let (backend, child) = spawn_platform(cmd, args, &env, Some(ws), None)
             .await
             .map_err(|e| e.to_string())?;
         let screen = Arc::new(Mutex::new(HistoryScreen::new(
@@ -109,10 +109,13 @@ impl TermHandle {
         self.screen.lock().await.styled_range(start, count)
     }
 
-    /// One-lock-call snapshot for bridges: (total, start, cells, cursor, modes).
-    /// `anchor=None` tracks the live tail; `Some(a)` holds position clamped
-    /// to the tail (scrollback). Replaces 3 round-trips with 1.
-    /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse, alt_screen).
+    /// One-lock-call snapshot for bridges: (total, start, cells, cursor,
+    /// modes, dirty). `anchor=None` tracks the live tail; `Some(a)` holds
+    /// position clamped to the tail (scrollback). Replaces 3 round-trips
+    /// with 1. modes = (app_cursor, bracketed_paste, mouse_proto,
+    /// sgr_mouse, alt_screen, bell). dirty = history-absolute rows the
+    /// screen reports changed (Konsole-style dirty set — frontends repaint
+    /// only these). Draining events here bounds the log: nobody else does.
     pub async fn snapshot_tail(
         &self,
         rows: usize,
@@ -122,9 +125,10 @@ impl TermHandle {
         usize,
         Vec<Vec<(String, String, String, u8)>>,
         (usize, usize),
-        (bool, bool, u16, bool, bool),
+        (bool, bool, u16, bool, bool, bool),
+        Vec<usize>,
     ) {
-        let screen = self.screen.lock().await;
+        let mut screen = self.screen.lock().await;
         let total = screen.total_lines();
         let tail = total.saturating_sub(rows);
         let start = match anchor {
@@ -134,14 +138,34 @@ impl TermHandle {
         let cells = screen.styled_range(start, rows);
         let cursor = screen.absolute_cursor();
         let mode = screen.mode();
-        let modes = (
+        let (app_cursor, bracketed, mouse, sgr, alt) = (
             mode.has_private(1),    // DECCKM: application cursor keys
             mode.has_private(2004), // bracketed paste
             mode.mouse_protocol(),  // 0/1000/1002/1003
             mode.sgr_mouse(),       // 1006 SGR encoding
             mode.is_alt_screen(),
         );
-        (total, start, cells, cursor, modes)
+        // Drain the event log (bell + titles/cwd: titles are the shell's
+        // business — Lace tab titles are pane identity, not synced).
+        let events = screen.take_events();
+        let bell = events
+            .iter()
+            .any(|e| matches!(e, stitch_pty::terminal::events::TermEvent::Bell));
+        let modes = (app_cursor, bracketed, mouse, sgr, alt, bell);
+        let base = total.saturating_sub(screen.lines());
+        let dirty: Vec<usize> = screen
+            .take_dirty_rows()
+            .into_iter()
+            .map(|r| base.saturating_add(r))
+            .collect();
+        (total, start, cells, cursor, modes, dirty)
+    }
+
+    /// Drain pending low-frequency events (bell/title/cwd) without reading
+    /// them. For consumers that never snapshot (TUI renders straight from
+    /// the screen): keeps the log bounded on long sessions.
+    pub async fn drain_events(&self) {
+        let _ = self.screen.lock().await.take_events();
     }
 
     pub async fn total_lines(&self) -> usize {

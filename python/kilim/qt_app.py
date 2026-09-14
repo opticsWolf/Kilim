@@ -277,17 +277,22 @@ def _x10_mouse(btn: int, col: int, row: int) -> bytes:
 
 
 def _modes_dict(m) -> dict:
-    """Snapshot modes 5-tuple -> named dict (stable defaults)."""
+    """Snapshot modes 6-tuple -> named dict (stable defaults)."""
     try:
-        app_cursor, bracketed, mouse, sgr, alt = m
+        app_cursor, bracketed, mouse, sgr, alt, bell = m
     except (TypeError, ValueError):
-        app_cursor, bracketed, mouse, sgr, alt = (False, False, 0, False, False)
+        try:
+            app_cursor, bracketed, mouse, sgr, alt = m
+        except (TypeError, ValueError):
+            app_cursor, bracketed, mouse, sgr, alt = (False, False, 0, False, False)
+        bell = False
     return {
         "app_cursor": bool(app_cursor),
         "bracketed": bool(bracketed),
         "mouse": int(mouse or 0),
         "sgr": bool(sgr),
         "alt": bool(alt),
+        "bell": bool(bell),
     }
 
 
@@ -377,10 +382,11 @@ class TerminalPane(QWidget):
         self._last_sig = None  # (total, cursor, start, rows) — idle-skip
         self._render_count = 0  # frames actually painted (tests/perf)
         self._paint_rows = -1  # viewport rows of the current document
-        self._paint_data: list = []  # last painted runs per visible row
+        self._paint_start = None  # history offset of row 0 (scrolls full-repaint)
         self._cursor_at = None  # absolute (x, y) of the painted cursor
         self._sel = None  # selection in absolute history coords (or None)
         self._modes = _modes_dict(None)  # DEC modes from latest snapshot
+        self._bell_until = 0.0  # monotonic deadline of the bell flash
         self._seen_total = None  # activity-badge baseline
         self._set_badge = lambda on: None  # wired by the window (tab dot)
         self._wheel_accum = 0  # fractional scroll accumulation (smooth pads)
@@ -421,7 +427,7 @@ class TerminalPane(QWidget):
     async def _snapshot(self, rows: int):
         # Alt screen has no scrollback: always track the tail there.
         anchor = None if (self._follow or self._modes.get("alt")) else self._start
-        total, start, cells, cursor, modes = await self.bridge.core.snapshot_term(
+        total, start, cells, cursor, modes, dirty = await self.bridge.core.snapshot_term(
             self.pane_id, rows, anchor
         )
         return {
@@ -431,6 +437,7 @@ class TerminalPane(QWidget):
             "total": total,
             "rows": rows,
             "modes": _modes_dict(modes),
+            "dirty": [int(r) for r in (dirty or [])],
         }
 
     def _grid(self) -> tuple[int, int]:
@@ -465,10 +472,15 @@ class TerminalPane(QWidget):
             pal.setColor(QPalette.Text, QColor(fg))
         self.view.setPalette(pal)
         self._last_sig = None  # repaint with the new mapping
+        self._paint_rows = -1  # explicit shell colors are baked: full rebuild
 
     def _render(self, snap):
         self._ensure_theme()
         self._modes = snap.get("modes") or _modes_dict(None)
+        if self._modes.get("bell"):
+            import time
+
+            self._bell_until = time.monotonic() + 1.5  # visible dot flash
         # Selection round-trips through absolute history coords every
         # paint: capture Qt's selection BEFORE touching the document so
         # output can keep flowing underneath it (no freeze).
@@ -489,21 +501,33 @@ class TerminalPane(QWidget):
             finally:
                 bar.blockSignals(False)
             self._paint(snap)
+        elif snap.get("dirty"):
+            # Same viewport, touched rows (progress bars, spinners): the
+            # old sig-gate went stale here — paint the dirty set.
+            self._paint(snap)
         self._cursor_to(snap["cursor"], snap["start"], snap["rows"])
         self._reapply_selection()
         self._badges(snap)
         self.view.viewport().setMouseTracking(self._modes.get("mouse") == 1003)
     def _paint(self, snap):
-        """Full rebuild or dirty-region diff, then remember the rows."""
+        """Full rebuild or dirty-subset repaint (stitch-pty dirty rows).
+
+        Full when the viewport shape or history offset changed (resize,
+        scroll, first paint, theme switch); otherwise only the rows the
+        screen reports touched. No content comparison: the screen is the
+        source of truth, our old row-diff was re-deriving it."""
         fg0 = self.view.palette().color(self.view.foregroundRole())
         bg0 = self.view.palette().color(self.view.backgroundRole())
         rows = snap["cells"]
-        if self._paint_rows == snap["rows"] and len(self._paint_data) == len(rows):
-            self._paint_diff(rows, fg0, bg0)  # only touched blocks relayout
+        lo, n = snap["start"], len(rows)
+        if self._paint_rows == snap["rows"] and self._paint_start == snap["start"]:
+            vis = sorted(r - lo for r in snap.get("dirty") or [] if lo <= r < lo + n)
+            if vis:
+                self._paint_subset(rows, vis, fg0, bg0)
         else:
             self._paint_full(rows, fg0, bg0)
-        self._paint_rows = snap["rows"]
-        self._paint_data = [list(r) for r in rows]
+            self._paint_rows = snap["rows"]
+            self._paint_start = snap["start"]
 
     def _paint_full(self, rows, fg0, bg0):
         """Wipe + rebuild (first paint, resize, theme switch)."""
@@ -519,22 +543,22 @@ class TerminalPane(QWidget):
             cur.endEditBlock()
         self._cursor_at = None  # document is new: reposition unconditionally
 
-    def _paint_diff(self, rows, fg0, bg0):
-        """Rewrite only changed blocks (Konsole-style dirty regions)."""
+    def _paint_subset(self, rows, indices, fg0, bg0):
+        """Rewrite exactly the given visible rows (dirty set)."""
         doc = self.view.document()
         cur = QTextCursor(doc)
         cur.beginEditBlock()
         try:
             touched = False
-            for i, row in enumerate(rows):
-                if i < len(self._paint_data) and list(row) == self._paint_data[i]:
+            for i in indices:
+                if not (0 <= i < len(rows)):
                     continue
                 block = doc.findBlockByNumber(i)
                 if not block.isValid():
                     continue
                 cur.setPosition(block.position())
                 cur.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-                self._insert_runs(cur, row, fg0, bg0)
+                self._insert_runs(cur, rows[i], fg0, bg0)
                 touched = True
         finally:
             cur.endEditBlock()
@@ -682,13 +706,17 @@ class TerminalPane(QWidget):
         self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
 
     def _badges(self, snap):
-        """Dot the tab when output lands while the pane is hidden."""
+        """Dot the tab on hidden output or a recent bell (1.5s flash)."""
+        import time
+
         total = snap["total"]
         if self._seen_total is None:
             self._seen_total = total
-            return
-        if self.view.isVisible():
+        elif self.view.isVisible():
             self._seen_total = total
+        if time.monotonic() < self._bell_until:
+            self._set_badge(True)  # bell flash shows even when visible
+        elif self.view.isVisible():
             self._set_badge(False)
         elif total != self._seen_total:
             self._set_badge(True)

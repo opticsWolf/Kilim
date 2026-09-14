@@ -110,7 +110,11 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
                 f.render_widget(Paragraph::new("spawning…"), inner);
                 return;
             };
-            let Ok(screen) = h.screen.try_lock() else { return };
+            let Ok(mut screen) = h.screen.try_lock() else { return };
+            // Drain low-frequency events (bell/title/cwd) nobody reads on
+            // this surface: bounds the log on long sessions. Best-effort —
+            // a contended lock just defers to the next frame.
+            screen.take_events();
             app.sizes.insert(pane_id.to_string(), (inner.width, inner.height));
             // Theme defaults: shells leave most cells "default" — paint
             // those with the theme fg/bg so the shell view follows theme

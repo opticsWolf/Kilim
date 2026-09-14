@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-core"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "mordant",
  "serde",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-py"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "kilim-core",
  "pyo3",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-tui"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "anyhow",
  "clap",
@@ -663,7 +663,6 @@ dependencies = [
  "kilim-core",
  "ratatui",
  "serde_json",
- "stitch-pty",
  "tokio",
 ]
 
@@ -1333,9 +1332,9 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stitch-pty"
-version = "0.5.6"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00285901ef00f24807eba8646b3f853e0eb9ba49bcbaa8ba3ac487255d2f4304"
+checksum = "1bf67293cf5bedb8677213cc14d9535410742cf959c61019c2e463c54af6a5a7"
 dependencies = [
  "async-trait",
  "bitflags",

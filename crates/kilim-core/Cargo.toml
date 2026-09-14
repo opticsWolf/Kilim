@@ -1,6 +1,6 @@
 [package]
 name = "kilim-core"
-version = "0.1.53"
+version = "0.1.54"
 edition = "2021"
 description = "Headless core for Kilim: layout model, syntax highlighting, session state (no UI deps)"
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-stitch-pty = "0.5.6"
+stitch-pty = "0.7"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy", "dump-load", "dump-create", "html"] }
 # Optional markdown preview via mordant 0.10 (katex via `math`, code themes
 # via `highlighter` which now carries its own serde_json — the 0.9 `diagram`
