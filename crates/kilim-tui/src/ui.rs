@@ -168,7 +168,7 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
         }
         kilim_core::layout::PaneKind::File { .. }
         | kilim_core::layout::PaneKind::Markdown { .. } => {
-            match app.session.highlighted_file(pane_id) {
+            match app.highlighted_cached(pane_id) {
                 Ok(rows) => {
                     let vis = inner.height as usize;
                     let wid = inner.width as usize;

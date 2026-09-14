@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.50: TUI input lag fixed — file highlights cached on (mtime, len, theme) instead of re-running syntect every frame; all pending keys drained per frame; poll 50ms to 33ms.
 - v0.1.49: TUI no longer doubles key input — the key handler ignored event kind, so Windows Press + Release both wrote to the PTY; only Press/Repeat act now.
 
 - v0.1.0: layout model, syntect highlight, TUI shell+file panes, Py surface.

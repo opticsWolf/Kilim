@@ -14,6 +14,10 @@ pub struct App {
     pub scroll: HashMap<String, usize>,
     /// Last drawn inner size per term pane (cols, rows) for resize sync.
     pub sizes: HashMap<String, (u16, u16)>,
+    /// Highlight cache per file/markdown pane: (mtime_nanos, len, theme,
+    /// rows). Syntect re-runs only on change — previously every frame,
+    /// which is what made input feel delayed behind slow draws.
+    file_cache: HashMap<String, (u64, u64, String, Vec<Vec<kilim_core::StyledSpan>>)>,
 }
 
 impl App {
@@ -24,7 +28,42 @@ impl App {
             layout_path: None,
             scroll: HashMap::new(),
             sizes: HashMap::new(),
+            file_cache: HashMap::new(),
         })
+    }
+
+    /// File/markdown highlight with an (mtime, len, theme) cache.
+    pub fn highlighted_cached(
+        &mut self,
+        pane_id: &str,
+    ) -> Result<Vec<Vec<kilim_core::StyledSpan>>, String> {
+        use kilim_core::layout::PaneKind;
+        let path = match self.session.panes.get(pane_id).map(|p| &p.kind) {
+            Some(PaneKind::File { path }) | Some(PaneKind::Markdown { path }) => path.clone(),
+            _ => return self.session.highlighted_file(pane_id),
+        };
+        let (mtime, len) = std::fs::metadata(&path)
+            .map(|m| {
+                (
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0),
+                    m.len(),
+                )
+            })
+            .unwrap_or((0, 0));
+        let theme = self.session.theme().to_string();
+        if let Some((mt, ln, th, rows)) = self.file_cache.get(pane_id) {
+            if *mt == mtime && *ln == len && *th == theme {
+                return Ok(rows.clone());
+            }
+        }
+        let rows = self.session.highlighted_file(pane_id)?;
+        self.file_cache
+            .insert(pane_id.to_string(), (mtime, len, theme, rows.clone()));
+        Ok(rows)
     }
 
     /// Cycle the code theme (TUI file panes + Qt FilePane share it) and
@@ -116,24 +155,25 @@ impl App {
         let backend = CrosstermBackend::new(stdout);
         let mut term = Terminal::new(backend)?;
 
-        loop {
+        'main: loop {
             term.draw(|f| {
                 // Sync draw: snapshot screens via try_lock (fed by tokio tasks).
                 super::ui::render(f, self);
             })?;
             // Sync drawn sizes -> PTY winsize.
             self.sync_sizes().await;
-            if event::poll(std::time::Duration::from_millis(50))? {
-                if let Event::Key(k) = event::read()? {
+            if event::poll(std::time::Duration::from_millis(33))? {
+                // Drain every pending key: one event per frame queues
+                // fast typing behind slow draws (felt as input lag).
+                loop {
+                    if let Event::Key(k) = event::read()? {
                     // Windows sends Press + Release per stroke: act on
                     // Press (and Repeat for held keys) or input doubles.
-                    if !matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                        continue;
-                    }
+                    if matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
                     match k.code {
-                        KeyCode::Char('q') if ctrl => break,
+                        KeyCode::Char('q') if ctrl => break 'main,
                         // Restart dead panes (ensure_terms replaces exited handles).
                         KeyCode::Char('r') if ctrl => {
                             let _ = self.session.ensure_terms().await;
@@ -185,11 +225,16 @@ impl App {
                         KeyCode::Left => self.send(b"\x1b[D").await,
                         KeyCode::Home => self.send(b"\x1b[H").await,
                         KeyCode::End => self.send(b"\x1b[F").await,
-                        KeyCode::Esc => break,
+                        KeyCode::Esc => break 'main,
                         _ => {}
                     }
+                    }
+                }
+                if !event::poll(std::time::Duration::ZERO)? {
+                    break;
                 }
             }
+        }
         }
 
         disable_raw_mode()?;
