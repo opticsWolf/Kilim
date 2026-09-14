@@ -129,70 +129,6 @@ def _normalize_lace_key(key: str) -> str:
     return key
 
 
-def _darken_rgba(col, factor: float) -> list[int]:
-    """Scale an [r, g, b, a] theme color (QColor tolerated)."""
-    try:
-        r, g, b, a = col.getRgb()
-    except AttributeError:
-        r, g, b, a = col[0], col[1], col[2], col[3] if len(col) > 3 else 255
-    return [int(r * factor), int(g * factor), int(b * factor), a]
-
-
-def _darken_gaps(theme, factor: float = 0.9):
-    """Step the dock-area gaps down: splitter handles + area fill.
-
-    Both live off PANEL/base roles shared with wider chrome, so this
-    runs as a post-build override (never a Lace fork): docks, tabs and
-    title bars keep their colors, the chassis around them goes darker."""
-    from lace.dock_theme import DockStyleCategory
-
-    splitter = theme.get(DockStyleCategory.SPLITTER)
-    if isinstance(splitter, dict) and "handle_color" in splitter:
-        splitter["handle_color"] = _darken_rgba(splitter["handle_color"], factor)
-    panel = theme.get(DockStyleCategory.PANEL)
-    if isinstance(panel, dict) and "bg_normal" in panel:
-        panel["bg_normal"] = _darken_rgba(panel["bg_normal"], factor)
-    return theme
-
-
-def _gap_palette(key: str) -> str:
-    """'kilim_dark(_neo)' -> 'dark' (gap-darkening selector)."""
-    name = key
-    if name.startswith("kilim_"):
-        name = name[len("kilim_"):]
-    if name.endswith("_neo"):
-        name = name[: -len("_neo")]
-    return name
-
-
-def _kilim_spec(d, geometry, extra=None):
-    from lace.dock_theme import ThemeSpec
-
-    kw = dict(
-        base=_hex_to_rgba(d["bg"]),
-        accent=_hex_to_rgba(d["accent"]),
-        text=_hex_to_rgba(d["text"]),
-        surface=_hex_to_rgba(d.get("surface", d["bg"])),
-        border=_hex_to_rgba(d.get("border", d["bg"])),
-        focus_border_color=_hex_to_rgba(d["accent"]),
-        is_light=bool(d.get("is_light", False)),
-        **geometry,
-    )
-    kw.update(extra or {})
-    return ThemeSpec(**kw)
-
-
-def _per_palette_neo(d):
-    # Edge rule + sidebar rings follow the palette accent.
-    accent = _hex_to_rgba(d["accent"])
-    return dict(
-        title_border_focus_color=accent,
-        sidebar_tab_border_color=_hex_to_rgba(d.get("border", d["bg"])),
-        sidebar_tab_border_active_color=accent,
-        sidebar_tab_border_hover_color=accent,
-    )
-
-
 def register_kilim_lace_themes() -> dict[str, str]:
     """Build the Kilim Lace themes into Lace's registries.
 
@@ -204,24 +140,44 @@ def register_kilim_lace_themes() -> dict[str, str]:
     in one process.
     """
     from lace import dock_custom_theme as _dct
-    from lace.dock_theme import build_theme
+    from lace.dock_theme import ThemeSpec, build_theme
+
+    def _spec(d, geometry, extra=None):
+        kw = dict(
+            base=_hex_to_rgba(d["bg"]),
+            accent=_hex_to_rgba(d["accent"]),
+            text=_hex_to_rgba(d["text"]),
+            surface=_hex_to_rgba(d.get("surface", d["bg"])),
+            border=_hex_to_rgba(d.get("border", d["bg"])),
+            focus_border_color=_hex_to_rgba(d["accent"]),
+            is_light=bool(d.get("is_light", False)),
+            **geometry,
+        )
+        kw.update(extra or {})
+        return ThemeSpec(**kw)
+
+    def _per_palette_neo(d):
+        # Edge rule + sidebar rings follow the palette accent.
+        accent = _hex_to_rgba(d["accent"])
+        return dict(
+            title_border_focus_color=accent,
+            sidebar_tab_border_color=_hex_to_rgba(d.get("border", d["bg"])),
+            sidebar_tab_border_active_color=accent,
+            sidebar_tab_border_hover_color=accent,
+        )
 
     mapping: dict[str, str] = {}
     for d in kilim_theme_defs():
         key, syntect = d["lace_key"], d["syntect"]
         mapping[key] = syntect
         if key not in _dct.DOCK_THEMES:
-            theme = build_theme(_kilim_spec(d, KILIM_GEOMETRY))
-            if _gap_palette(key) in ("dark", "warm"):
-                theme = _darken_gaps(theme)  # gaps ~10% darker
-            _dct.DOCK_THEMES[key] = theme
+            _dct.DOCK_THEMES[key] = build_theme(_spec(d, KILIM_GEOMETRY))
         neo_key = d["neo_key"]
         mapping[neo_key] = d["neo_syntect"]  # neo chrome → neo code/md
         if neo_key not in _dct.DOCK_THEMES:
-            theme = build_theme(_kilim_spec(d, KILIM_NEO_GEOMETRY, _per_palette_neo(d)))
-            if _gap_palette(neo_key) in ("dark", "warm"):
-                theme = _darken_gaps(theme)  # gaps ~10% darker
-            _dct.DOCK_THEMES[neo_key] = theme
+            _dct.DOCK_THEMES[neo_key] = build_theme(
+                _spec(d, KILIM_NEO_GEOMETRY, _per_palette_neo(d))
+            )
     groups = _dct.THEME_GROUPS
     if "Kilim" not in groups:
         keys: list[str] = []

@@ -122,38 +122,3 @@ def test_theme_names_are_the_kilim_eight():
                 "Kilim Neutral", "Kilim Neutral Neo", "Kilim Warm", "Kilim Warm Neo"]
     assert sorted(list_themes()) == sorted(expected)
     assert sorted(markdown_theme_names()) == sorted(expected)
-
-
-def test_gap_darker_dark_warm_only():
-    """Gap roles (splitter handle + area fill) step down 10% for dark/warm
-    palettes in both chassis; light/neutral register unmodified."""
-    from lace import dock_custom_theme as D
-    from lace.dock_theme import DockStyleCategory, build_theme
-
-    from kilim.qt_app import (
-        KILIM_GEOMETRY,
-        KILIM_NEO_GEOMETRY,
-        _darken_rgba,
-        _kilim_spec,
-        _per_palette_neo,
-        kilim_theme_defs,
-        register_kilim_lace_themes,
-    )
-
-    register_kilim_lace_themes()
-    cases = []
-    for d in kilim_theme_defs():
-        cases.append((d["lace_key"], _kilim_spec(d, KILIM_GEOMETRY)))
-        cases.append((d["neo_key"], _kilim_spec(d, KILIM_NEO_GEOMETRY, _per_palette_neo(d))))
-    for key, spec in cases:
-        ref = build_theme(spec)
-        reg = D.DOCK_THEMES[key]
-        pal = key[len("kilim_"):]
-        if pal.endswith("_neo"):
-            pal = pal[: -len("_neo")]
-        for role, entry in (("splitter", "handle_color"), ("panel", "bg_normal")):
-            cat = DockStyleCategory.SPLITTER if role == "splitter" else DockStyleCategory.PANEL
-            want = ref[cat][entry]
-            if pal in ("dark", "warm"):
-                want = _darken_rgba(want, 0.9)
-            assert reg[cat][entry] == want, f"{key} {role}"
