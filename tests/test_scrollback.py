@@ -476,3 +476,22 @@ def test_term_pane_follows_code_theme():
     finally:
         w.close()
         app.processEvents()
+
+
+def test_pane_focus_reclaimed_from_chrome():
+    """Cursor visibility = focus: Lace chrome (tab bar) must not keep
+    focus over the active terminal pane (regression: no input cursor)."""
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    app, w = _window()
+    try:
+        view = w.term_panes["term1"].view
+        bars = [o for o in w.findChildren(QWidget) if type(o).__name__ == "DockAreaTabBar"]
+        assert bars, "expected Lace tab bar chrome"
+        bars[0].setFocus()
+        app.processEvents()
+        assert QApplication.focusWidget() is view
+        assert view.hasFocus()
+    finally:
+        w.close()
+        app.processEvents()

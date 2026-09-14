@@ -780,10 +780,84 @@ class KilimWindow(QMainWindow):
         if self.lace_theme is None and "kilim_dark" in self._kilim_by_lace:
             self.apply_lace_theme("kilim_dark")  # fresh launch opens unified
         self._build_menus()
-        # Unfocused text widgets draw no cursor: focus the active term pane.
+        # Focused dock == active pane (session_active reads it that
+        # way), and only a focused text widget draws its cursor. Lace
+        # chrome (tab bar) grabs focus on show and beats the one-shot,
+        # so: watch focus changes + retry the claim until a pane holds it.
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(self._on_focus_changed)
+        for ms in (300, 800, 1500):
+            QTimer.singleShot(ms, self._claim_pane_focus)
+        # Unfocused text widgets draw no cursor (see _claim_pane_focus
+        # retries above — one shot loses to Lace chrome / inactive window).
         active_view = self.term_panes.get(self._active, None)
         if active_view is not None:
-            QTimer.singleShot(300, active_view.view.setFocus)
+            QTimer.singleShot(300, self._claim_pane_focus)
+
+    def _inside_panes(self, w) -> bool:
+        """True when the widget lives inside one of our pane containers."""
+        try:
+            containers = (
+                list(self.term_panes.values())
+                + list(self.file_panes.values())
+                + list(self.md_panes.values())
+            )
+            while w is not None:
+                if w in containers:
+                    return True
+                w = w.parentWidget()
+            return False
+        except RuntimeError:
+            return True  # half-torn-down: don't touch focus
+
+    def _active_widget(self):
+        """Widget to focus for the active pane (term view / file / md view)."""
+        pid = self.session_active() if hasattr(self, "pane_docks") else self._active
+        if pid in self.term_panes:
+            return self.term_panes[pid].view
+        if pid in self.file_panes:
+            return self.file_panes[pid]
+        if pid in self.md_panes:
+            lay = self.md_panes[pid].layout()
+            if lay is not None and lay.count():
+                return lay.itemAt(0).widget()
+            return self.md_panes[pid]
+        return None
+
+    def _claim_pane_focus(self):
+        """Focus the active pane unless the user focused pane content.
+
+        Only steals from Lace chrome (tab bar, title bars) — never from
+        our own views, menus, popups, or dialogs. Retried at startup
+        because the window may still be inactive on the first shot."""
+        try:
+            from PySide6.QtWidgets import QDialog, QMenu, QMenuBar
+
+            if not self.isVisible():
+                return  # closed/hidden: a previous test's retry must not steal
+            fw = QApplication.focusWidget()
+            if fw is not None and self._inside_panes(fw):
+                return  # user is somewhere real: leave it
+            if QApplication.activePopupWidget() is not None:
+                return
+            if fw is not None and isinstance(fw, (QMenu, QMenuBar, QDialog)):
+                return
+            target = self._active_widget()
+            if target is not None and not target.hasFocus():
+                target.setFocus()
+        except RuntimeError:
+            pass  # closing: panes half-deleted
+
+    def _on_focus_changed(self, _old, new):
+        if new is None:
+            return
+        try:
+            if self._inside_panes(new):
+                return
+        except RuntimeError:
+            return
+        self._claim_pane_focus()
 
     def _build_menus(self):
         """Views menu: re-open closed panes + reset layout.
@@ -1053,6 +1127,10 @@ class KilimWindow(QMainWindow):
         return self._active
 
     def closeEvent(self, e):
+        try:
+            QApplication.instance().focusChanged.disconnect(self._on_focus_changed)
+        except (RuntimeError, TypeError):
+            pass  # never connected / already gone
         try:
             perspectives.save(self.perspective_path, perspectives.capture(self))
             if self.lace_theme:  # save() rewrites the sidecar: re-stash.
