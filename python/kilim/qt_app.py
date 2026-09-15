@@ -319,6 +319,14 @@ class _TermView(QPlainTextEdit):
     def keyPressEvent(self, e):
         self._owner.on_key(e)
 
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self._owner._on_view_focus(True)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self._owner._on_view_focus(False)
+
     def wheelEvent(self, e):
         self._owner.on_wheel(e)
 
@@ -597,12 +605,27 @@ class TerminalPane(QWidget):
             cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
 
     def _caret_cell(self, start, cursor, nrows):
-        """Viewport (row, col) of the soft block cursor, or None."""
-        if not self._caret_on:
+        """Viewport (row, col) of the soft block cursor, or None.
+
+        Focus-gated like a real terminal: an unfocused pane shows no
+        block, and loses it the moment focus leaves the view."""
+        if not self._caret_on or not self.view.hasFocus():
             return None
         cx, cy_abs = cursor
         row = cy_abs - start
         return (row, cx) if 0 <= row < nrows else None
+
+    def _on_view_focus(self, focused: bool):
+        """Show/clear the block on focus changes and run the blink clock
+        only while focused."""
+        self._caret_on = True
+        if focused:
+            if self._blink_ms:
+                self._caret_timer.start(self._blink_ms)  # fresh phase
+        else:
+            self._caret_timer.stop()  # unfocused: no blink churn
+        if self._cursor_at is not None:
+            self._repaint_row(self._cursor_at[1])
 
     def _repaint_row(self, abs_line):
         """Repaint one cached row (cursor move/blink: content unchanged)."""
@@ -618,6 +641,8 @@ class TerminalPane(QWidget):
 
     def _blink_caret(self):
         """Toggle the block cursor phase; only its own row repaints."""
+        if not self.view.hasFocus():
+            return  # timer raced a blur: nothing to blink
         if QApplication.mouseButtons() != Qt.NoButton:
             return  # live drag: leave the selection alone
         self._caret_on = not self._caret_on
@@ -627,18 +652,21 @@ class TerminalPane(QWidget):
     def _cursor_to(self, cursor, start, nrows):
         """Track the terminal cursor and paint its block on move.
 
-        A move re-show the block and restarts the blink phase, like a
+        A move re-shows the block and restarts the blink phase, like a
         terminal: the rows left and entered are repainted from the cached
-        cells (a move need not dirty any row)."""
+        cells (a move need not dirty any row). Only the focused view
+        shows a block."""
         prev = self._cursor_at
         self._cursor_at = tuple(cursor)
         if prev == self._cursor_at:
             return
-        self._caret_on = True
-        if self._blink_ms:
-            self._caret_timer.start(self._blink_ms)  # sync the phase
-        if prev is not None and prev[1] != self._cursor_at[1]:
-            self._repaint_row(prev[1])  # clear the old block
+        focused = self.view.hasFocus()
+        if focused:
+            self._caret_on = True
+            if self._blink_ms:
+                self._caret_timer.start(self._blink_ms)  # sync the phase
+            if prev is not None and prev[1] != self._cursor_at[1]:
+                self._repaint_row(prev[1])  # clear the old block
         if QApplication.mouseButtons() != Qt.NoButton:
             return  # live drag: don't yank the selection anchor
         cx, cy_abs = cursor
@@ -653,7 +681,8 @@ class TerminalPane(QWidget):
         c = QTextCursor(doc)
         c.setPosition(block.position() + min(ci, len(block.text())))
         self.view.setTextCursor(c)
-        self._repaint_row(cy_abs)  # draw the block on its new row
+        if focused:
+            self._repaint_row(cy_abs)  # draw the block on its new row
 
     def _capture_selection(self):
         """Qt selection -> absolute history coords (survives repaints)."""

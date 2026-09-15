@@ -640,12 +640,16 @@ def _cell_format(block, ci):
 
 def test_terminal_cursor_is_a_blinking_block():
     """Qt draws no caret in a read-only view (regression: "no cursor in
-    the Qt terminal"): the cell under the terminal cursor is reverse-video,
-    it follows cursor moves, and the blink toggles it without counting as
-    a content repaint."""
+    the Qt terminal"): the focused view paints a reverse-video block into
+    the cell under the terminal cursor, follows moves, blinks without
+    counting as a content repaint, and clears when focus leaves."""
     app, w = _window()
     try:
         term = _term(w)
+        term._poller.stop()  # fake snaps stay put
+        term.view.setFocus()
+        app.processEvents()
+        assert term.view.hasFocus(), "offscreen focus is needed by this test"
         term._render(_fake_snap([["a", "b", "c", "d"], ["e", "f", "g", "h"]], cursor=(2, 1)))
         doc = term.view.document()
         fg = term.view.palette().color(term.view.foregroundRole())
@@ -672,6 +676,17 @@ def test_terminal_cursor_is_a_blinking_block():
         assert _cell_format(doc.findBlockByNumber(0), 0).background().color() == fg
         assert _cell_format(doc.findBlockByNumber(1), 2).background().color() == bg
         assert term._caret_on is True  # a move re-shows the block
+
+        # Blur clears the block and parks the blink clock; focus brings both
+        # back ("blinking cursor only while the widget has the focus").
+        term.view.clearFocus()
+        app.processEvents()
+        assert _cell_format(doc.findBlockByNumber(0), 0).background().color() == bg
+        assert not term._caret_timer.isActive()
+        term.view.setFocus()
+        app.processEvents()
+        assert _cell_format(doc.findBlockByNumber(0), 0).background().color() == fg
+        assert term._caret_timer.isActive() or not term._blink_ms
     finally:
         w.close()
         app.processEvents()
