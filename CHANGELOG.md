@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.69: Kilim Light chrome neutralized — the stock Lace light-blue cast reduced to a faint cool tint (bg/surface/border/text/selection); paper stays white.
 - v0.1.68: Reset Layout restores the arrangement the layout file defines — the sidecar only restores a *session* at launch, so a saved layout can no longer masquerade as the default.
 - v0.1.67: legacy theme-name mapping removed (no aliases, no name canonicalization); the stock-chrome pair takes the freed name — Kilim Dark / Kilim Dark Neo (was Default / Default Neo).
 - v0.1.66: Kilim Dark / Dark Neo renamed Kilim Midnight / Midnight Neo two new dark themes on Lace's stock default chrome — Kilim Default / Default Neo, the Kilim chassis and outline on the VS Code Dark+ palette, with Visual Studio Dark+ / One Dark Pro mordant bases. Ten unified themes.

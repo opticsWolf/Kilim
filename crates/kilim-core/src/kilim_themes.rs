@@ -179,16 +179,18 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
             ("constant.character.escape", "#4cbf99"),
         ],
         is_light: true,
+        // Chrome is near-neutral with a whisper of cool (the stock Lace
+        // light cast read too blue; ~4% saturation at the same lightness).
         editor_bg: "#ffffff",
-        bg: "#dadde1",
-        surface: "#f5f7fa",
+        bg: "#dddee0",
+        surface: "#f7f8f9",
         // Lace light leaves border == bg (invisible outline). Kilim follows
-        // neutral's darker unfocused outline: the same -20/channel step off
+        // neutral's darker unfocused outline: the same -21/channel step off
         // bg that neutral takes (#bec1c5 -> #aaadb2).
-        border: "#c6c9cd",
-        text: "#2d323c",
+        border: "#c8c9cb",
+        text: "#2f3134",
         accent: "#3651d9",
-        selection: "#b9c6f5",
+        selection: "#ccd3e2",
     },
     KilimThemeDef {
         lace_key: "kilim_warm",
