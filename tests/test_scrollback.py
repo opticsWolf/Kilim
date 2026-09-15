@@ -314,11 +314,11 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
         assert "&Themes" in menus, sorted(menus)
         subs = {a.text(): a.menu() for a in menus["&Themes"].actions() if a.menu()}
-        assert "Code (Qt + TUI)" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
+        assert "Code" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
         md_actions = {a.text(): a for a in subs["Markdown"].actions() if not a.isSeparator()}
         code_actions = {
             a.text(): a
-            for a in subs["Code (Qt + TUI)"].actions()
+            for a in subs["Code"].actions()
             if a.text() in md_actions
         }
         # One shared ten: code + markdown lists match, no Pin menu, and no
@@ -327,7 +327,7 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         assert len(code_actions) == 10
         assert all(
             a.isSeparator() or a.text() in md_actions
-            for a in subs["Code (Qt + TUI)"].actions()
+            for a in subs["Code"].actions()
         ), "unexpected extra in the Code submenu"
         assert "&Pin" not in menus
         code_actions["Kilim Warm"].trigger()

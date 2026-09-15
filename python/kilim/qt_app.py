@@ -1929,7 +1929,7 @@ class KilimWindow(FramelessLaceMainWindow):
             none.setEnabled(False)
 
         # Code theme: TUI file panes + Qt FilePane share the session theme.
-        code_menu = themes.addMenu("Code (Qt + TUI)")
+        code_menu = themes.addMenu("Code")
         code_group = QActionGroup(self)
         code_group.setExclusive(True)
         current_code = self.bridge.core.theme()
