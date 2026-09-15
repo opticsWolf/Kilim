@@ -210,11 +210,14 @@ def test_empty_cmd_spawns_platform_default():
 def test_blend_cell_math(session):
     """Core blending: identity at 0, moved at 0.5, legible after flips."""
     ink, paper = "#cbd0dc", "#101319"
-    assert session.blend_cell("#000000", "#ffffff", ink, paper, 0.0) == (
+    assert session.blend_cell("#000000", "#ffffff", ink, paper, 0.0, True, True) == (
         "#000000",
         "#ffffff",
     )
-    f, b = session.blend_cell("#ffffff", "#000000", ink, paper, 0.5)
+    f, b = session.blend_cell("#ffffff", "#000000", ink, paper, 0.5, True, True)
+    # Unpainted sides are the caller's resolved roles (post-swap) and pass
+    # through exactly — a mirrored cursor cell stays paper-on-ink.
+    assert session.blend_cell(paper, ink, ink, paper, 0.5, False, False) == (paper, ink)
     assert f != "#ffffff" and b != "#000000"
 
     def luma(hexcol):
@@ -223,8 +226,8 @@ def test_blend_cell_math(session):
         return 0.2126 * r + 0.7152 * g + 0.0722 * bl
 
     # Polarity flip: a dark chip on a light theme must not collapse.
-    f2, b2 = session.blend_cell("#e6e6e6", "#1a1a1a", "#2f3134", "#ffffff", 0.5)
+    f2, b2 = session.blend_cell("#e6e6e6", "#1a1a1a", "#2f3134", "#ffffff", 0.5, True, True)
     assert abs(luma(f2) - luma(b2)) > 0.1, (f2, b2)
     # Malformed colors raise instead of guessing.
     with pytest.raises(ValueError):
-        session.blend_cell("nope", "#ffffff", ink, paper, 0.5)
+        session.blend_cell("nope", "#ffffff", ink, paper, 0.5, True, True)

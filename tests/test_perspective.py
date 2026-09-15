@@ -23,12 +23,17 @@ def test_layout_groups_flattens_tree():
 
 
 def test_capture_apply_roundtrip(tmp_path):
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow
 
+    # Hermetic copy: parallel workers must not race on the repo's layout
+    # (each window writes its sidecar on close).
+    layout = copy_layout("layouts/example.json", tmp_path / "example.json")
+    sidecar = str(tmp_path / "example.perspective.json")
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow("layouts/example.json")
+    w = KilimWindow(str(layout), sidecar)
     w.show()
     app.processEvents()
     snap = capture(w)
@@ -39,7 +44,7 @@ def test_capture_apply_roundtrip(tmp_path):
     save(sidecar, snap)
     assert load(sidecar)["kilim"]["tab_groups"] == snap["kilim"]["tab_groups"]
 
-    w2 = KilimWindow("layouts/example.json")
+    w2 = KilimWindow(str(layout), sidecar)
     w2.show()
     app.processEvents()
     assert apply(w2, load(sidecar)) is True
@@ -51,12 +56,14 @@ def test_capture_apply_roundtrip(tmp_path):
 
 
 def test_apply_rejects_diverged_names(tmp_path):
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow
 
+    layout = copy_layout("layouts/example.json", tmp_path / "example.json")
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow("layouts/example.json")
+    w = KilimWindow(str(layout), str(tmp_path / "example.perspective.json"))
     w.show()
     app.processEvents()
     bad = {"version": 1, "kilim": {"tab_groups": [["ghost"]], "active": "ghost"}, "lace": "{}"}

@@ -82,6 +82,34 @@ impl Rgb {
     }
 }
 
+/// Blend a cell's on-screen colors toward the theme, only for the sides the
+/// tool actually painted.
+///
+/// `fg`/`bg` are the *displayed* roles after any reverse-video swap, already
+/// resolved (a terminal default side carries the theme's ink/paper for that
+/// role — which for a reversed cell means paper-on-ink). `fg_painted`/
+/// `bg_painted` say whether the tool painted each side; unpainted sides come
+/// back exactly as passed, while still defining the pair the contrast guard
+/// checks against. `weight` 0 is a no-op.
+pub fn blend_painted(
+    fg: Rgb,
+    bg: Rgb,
+    ink: Rgb,
+    paper: Rgb,
+    weight: f32,
+    fg_painted: bool,
+    bg_painted: bool,
+) -> (Rgb, Rgb) {
+    if weight <= 0.0 {
+        return (fg, bg);
+    }
+    let (f, b) = blend_cell(fg, bg, ink, paper, weight);
+    (
+        if fg_painted { f } else { fg },
+        if bg_painted { b } else { bg },
+    )
+}
+
 /// Blend a cell's on-screen colors toward the theme.
 ///
 /// `fg`/`bg` are the *final* roles after any reverse-video swap, `ink`/
@@ -173,6 +201,25 @@ mod tests {
         assert!(fg2.contrast(bg2) >= MIN_RATIO, "still unreadable: {fg2:?} {bg2:?}");
         // And the block itself did move toward the light paper.
         assert!(bg2.luminance() > bg.luminance());
+    }
+
+    #[test]
+    fn unpainted_sides_pass_through_exactly() {
+        // Default (theme-derived) sides are not the tool's to blend: Kilim's
+        // reversed cursor cell is exactly this shape and must stay crisp.
+        // Both unpainted: the resolved pair (paper-on-ink here) survives.
+        assert_eq!(
+            blend_painted(PAPER, INK, INK, PAPER, BLEND_WEIGHT, false, false),
+            (PAPER, INK)
+        );
+        // A painted chip side still moves; the theme side does not.
+        let chip = Rgb::new(0x2d, 0x1b, 0x3d);
+        let (fg2, bg2) = blend_painted(INK, chip, INK, PAPER, BLEND_WEIGHT, false, true);
+        assert_eq!(fg2, INK);
+        assert_ne!(bg2, chip);
+        assert!(bg2.contrast(PAPER) < chip.contrast(PAPER));
+        // Zero weight returns both sides as given.
+        assert_eq!(blend_painted(PAPER, INK, INK, PAPER, 0.0, true, true), (PAPER, INK));
     }
 
     #[test]

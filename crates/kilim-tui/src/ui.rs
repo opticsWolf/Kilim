@@ -230,13 +230,16 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
     }
 }
 
-/// One pty cell -> Span, themed: `Reset` sides (shell "default") take
-/// the theme fg/bg so the shell view follows theme switches.
-/// Resolved AFTER reverse-swap, so reversed defaults theme correctly.
+/// One pty cell -> Span, themed: `Reset` sides (shell "default") take the
+/// theme fg/bg so the shell view follows theme switches; `blend` (0 = off)
+/// mixes **painted** RGB cells toward the theme's ink/paper (Themes →
+/// Code → Blend). Named ANSI colors stay untouched: the host terminal maps
+/// those, so there is no fixed RGB to blend.
 ///
-/// `blend` (0 = off) mixes explicit **RGB** cells toward the theme's
-/// ink/paper (Themes → Code → Blend). Named ANSI colors stay untouched:
-/// the host terminal maps those, so there is no fixed RGB to blend.
+/// Order matters: swap first, *then* resolve defaults, *then* blend only the
+/// sides the tool painted. A default side is theme-derived already — Kilim's
+/// own cursor/selection are exactly that shape — so blending it would muddy
+/// the theme's own ink/paper instead of integrating a foreign block.
 fn term_cell_span<'a>(
     text: &'a str,
     fg: &str,
@@ -246,38 +249,6 @@ fn term_cell_span<'a>(
     theme_bg: Color,
     blend: f32,
 ) -> Span<'a> {
-    let mut sp = cell_span(text, fg, bg, attrs);
-    if sp.style.fg == Some(Color::Reset) {
-        sp.style.fg = Some(theme_fg);
-    }
-    if sp.style.bg == Some(Color::Reset) {
-        sp.style.bg = Some(theme_bg);
-    }
-    if blend > 0.0 {
-        if let (Some(cell_fg), Some(cell_bg), Some(ink), Some(paper)) = (
-            rgb(sp.style.fg),
-            rgb(sp.style.bg),
-            rgb(Some(theme_fg)),
-            rgb(Some(theme_bg)),
-        ) {
-            let (f, b) = kilim_core::blend_cell(cell_fg, cell_bg, ink, paper, blend);
-            sp.style.fg = Some(Color::Rgb(f.r, f.g, f.b));
-            sp.style.bg = Some(Color::Rgb(b.r, b.g, b.b));
-        }
-    }
-    sp
-}
-
-fn rgb(c: Option<Color>) -> Option<kilim_core::Rgb> {
-    match c {
-        Some(Color::Rgb(r, g, b)) => Some(kilim_core::Rgb::new(r, g, b)),
-        _ => None,
-    }
-}
-
-/// One stitch-pty cell -> ratatui Span.
-/// fg/bg: "default" | ANSI name ("red", "brightblue") | 6-hex ("ff0000", "#ff0000").
-fn cell_span<'a>(text: &'a str, fg: &str, bg: &str, attrs: u8) -> Span<'a> {
     let bold = attrs & (1 << 0) != 0;
     let dim = attrs & (1 << 1) != 0;
     let italic = attrs & (1 << 2) != 0;
@@ -289,8 +260,33 @@ fn cell_span<'a>(text: &'a str, fg: &str, bg: &str, attrs: u8) -> Span<'a> {
 
     let mut fg_c = cell_color(fg);
     let mut bg_c = cell_color(bg);
+    let mut fg_painted = fg_c != Color::Reset;
+    let mut bg_painted = bg_c != Color::Reset;
+    // Resolve the default sides to their *own* role first, then swap: a
+    // real terminal reverses the resolved pair, so a bare default-on-default
+    // cell displays paper-on-ink (swapping Reset markers would lose that).
+    if fg_c == Color::Reset {
+        fg_c = theme_fg;
+    }
+    if bg_c == Color::Reset {
+        bg_c = theme_bg;
+    }
     if reverse {
         std::mem::swap(&mut fg_c, &mut bg_c);
+        std::mem::swap(&mut fg_painted, &mut bg_painted);
+    }
+    if blend > 0.0 {
+        if let (Some(ink), Some(paper)) = (rgb(Some(theme_fg)), rgb(Some(theme_bg))) {
+            // Only RGB sides can blend: a named ANSI color is painted but
+            // host-mapped, so it passes through exactly (None = untouched).
+            if let (Some(f_in), Some(b_in)) = (rgb(Some(fg_c)), rgb(Some(bg_c))) {
+                let (f, b) = kilim_core::blend_painted(
+                    f_in, b_in, ink, paper, blend, fg_painted, bg_painted,
+                );
+                fg_c = Color::Rgb(f.r, f.g, f.b);
+                bg_c = Color::Rgb(b.r, b.g, b.b);
+            }
+        }
     }
     let mut style = Style::default().fg(fg_c).bg(bg_c);
     if bold {
@@ -311,6 +307,14 @@ fn cell_span<'a>(text: &'a str, fg: &str, bg: &str, attrs: u8) -> Span<'a> {
     let text = if hidden { " " } else { text };
     Span::styled(text, style)
 }
+
+fn rgb(c: Option<Color>) -> Option<kilim_core::Rgb> {
+    match c {
+        Some(Color::Rgb(r, g, b)) => Some(kilim_core::Rgb::new(r, g, b)),
+        _ => None,
+    }
+}
+
 
 fn cell_color(s: &str) -> Color {
     // Fast path: byte-exact matches, no allocation, no parsing. The PTY
@@ -520,11 +524,15 @@ mod live_tests {
         let sp = term_cell_span("y", "red", "", 0, fg, bg, 0.0);
         assert_eq!(sp.style.fg, Some(Color::Red));
         assert_eq!(sp.style.bg, Some(bg));
-        // Reversed defaults resolve on the swapped sides (real-terminal
-        // semantics: reverse of default-on-red is red-on-default).
+        // Reversed cells reverse the *resolved* pair: default-on-red shows
+        // red on the theme ink (the default's own role), not on the paper.
         let sp = term_cell_span("z", "default", "red", 1 << 5, fg, bg, 0.0);
         assert_eq!(sp.style.fg, Some(Color::Red));
-        assert_eq!(sp.style.bg, Some(bg));
+        assert_eq!(sp.style.bg, Some(fg));
+        // …and a bare default-on-default reverses to paper-on-ink.
+        let sp = term_cell_span("w", "default", "default", 1 << 5, fg, bg, 0.0);
+        assert_eq!(sp.style.fg, Some(bg));
+        assert_eq!(sp.style.bg, Some(fg));
     }
 
     #[test]
@@ -557,6 +565,14 @@ mod live_tests {
         let sp = term_cell_span("x", "red", "blue", 0, ink, paper, kilim_core::BLEND_WEIGHT);
         assert_eq!(sp.style.fg, Some(Color::Red));
         assert_eq!(sp.style.bg, Some(Color::Blue));
+        // A theme-default side (Kilim's cursor/selection shape) is exact:
+        // only the painted side moves.
+        let sp = term_cell_span("x", "default", "#2d1b3d", 0, ink, paper, kilim_core::BLEND_WEIGHT);
+        assert_eq!(sp.style.fg, Some(ink));
+        assert_ne!(sp.style.bg, Some(Color::Rgb(0x2d, 0x1b, 0x3d)));
+        let sp = term_cell_span("x", "default", "default", 1 << 5, ink, paper, kilim_core::BLEND_WEIGHT);
+        assert_eq!(sp.style.fg, Some(paper)); // reversed default: paper side exact
+        assert_eq!(sp.style.bg, Some(ink));
     }
 
     /// Draw small, sync, draw big, sync: committed dims track the

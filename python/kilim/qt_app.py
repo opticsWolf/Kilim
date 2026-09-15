@@ -46,6 +46,11 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def _painted(color: str) -> bool:
+    """True when the terminal painted this cell side (not "default")."""
+    return (color or "").strip().lower() not in ("", "default")
+
+
 def cell_qcolor(s: str, default: QColor) -> QColor:
     t = (s or "").strip().lower()
     if not t or t == "default":
@@ -929,15 +934,24 @@ class TerminalPane(QWidget):
 
     _BLEND_CACHE: dict = {}  # (fg,bg,ink,paper,weight) -> blended QColors
 
-    def _blended(self, fgc: QColor, bgc: QColor, fg0: QColor, bg0: QColor):
-        """Mix a cell pair toward the theme (Blend). Cached: a frame holds
-        few distinct colors, and the math lives in Rust so both surfaces
-        blend identically."""
-        key = (fgc.name(), bgc.name(), fg0.name(), bg0.name(), self._blend)
+    def _blended(self, fgc: QColor, bgc: QColor, fg0: QColor, bg0: QColor, painted: tuple[bool, bool]):
+        """Mix a cell pair toward the theme (Blend). Only sides the terminal
+        painted take part; `None` sides stay exact. Cached: a frame holds few
+        distinct colors, and the math lives in Rust so both surfaces blend
+        identically."""
+        key = (fgc.name(), bgc.name(), fg0.name(), bg0.name(), self._blend, painted)
         pair = TerminalPane._BLEND_CACHE.get(key)
         if pair is None:
             try:
-                f, b = self.bridge.core.blend_cell(*key)
+                f, b = self.bridge.core.blend_cell(
+                    fgc.name(),
+                    bgc.name(),
+                    fg0.name(),
+                    bg0.name(),
+                    self._blend,
+                    painted[0],
+                    painted[1],
+                )
             except (AttributeError, ValueError):
                 return fgc, bgc  # unknown core: keep the unblended colors
             pair = (QColor(f), QColor(b))
@@ -947,16 +961,19 @@ class TerminalPane(QWidget):
         return pair
 
     def _fmt(self, key, fg0, bg0) -> QTextCharFormat:
-        """Cell format. With Blend on, explicit colors (ANSI blocks and
-        truecolor chips from other apps) mix toward the theme's paper/ink —
-        applied after reverse-swap, so reversed blocks blend too."""
+        """Cell format. With Blend on, painted colors (ANSI blocks and
+        truecolor chips from other apps) mix toward the theme's paper/ink;
+        the terminal's own defaults stay exact, so Kilim's reversed cursor
+        cell remains crisp paper-on-ink."""
         fg, bg, attrs = key
+        painted = [_painted(fg), _painted(bg)]
         fmt = QTextCharFormat()
         fgc, bgc = cell_qcolor(fg, fg0), cell_qcolor(bg, bg0)
-        if attrs & (1 << 5):  # reverse
+        if attrs & (1 << 5):  # reverse: swap the resolved roles
             fgc, bgc = bgc, fgc
+            painted.reverse()
         if self._blend > 0:
-            fgc, bgc = self._blended(fgc, bgc, fg0, bg0)
+            fgc, bgc = self._blended(fgc, bgc, fg0, bg0, (painted[0], painted[1]))
         fmt.setForeground(fgc)
         fmt.setBackground(bgc)
         if attrs & (1 << 0):
@@ -1333,7 +1350,6 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QMenuBar
 
         # The embedded menus are the chrome content; the window title is
@@ -1343,9 +1359,10 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
         self.menu_bar = QMenuBar(self)
         # Same height as the bar: one continuous surface, items centered.
         self.menu_bar.setFixedHeight(self.height())
-        # Base layout: spacing, icon, title, stretch, buttons — insert the
-        # menu bar right after the icon and before the hidden title.
-        self.hBoxLayout.insertWidget(2, self.menu_bar, 0, Qt.AlignVCenter)
+        # Anchored after the title (hidden, so this reads as right after the
+        # icon). Never a literal index: the base layout order changed before
+        # (Lace 0.7.5 added insert_content_widget for exactly this).
+        self.insert_content_widget(self.menu_bar)
 
         self._build_menus()
         self._init_dock_style()
@@ -1419,38 +1436,10 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
             }}
         """)
 
-    def paintEvent(self, event):
-        """Solid theme fill first: the qframeless base does not always
-        render the QSS background, so the menus and surroundings share
-        the exact same color."""
-        from PySide6.QtGui import QColor, QPainter
-
-        from lace.dock_theme import DockStyleCategory
-        from lace.frameless_titlebar import _color_hex
-
-        try:
-            sm = self._style_mgr
-            bg = sm.get(DockStyleCategory.SIDEBAR, "bg_color") or sm.get(
-                DockStyleCategory.TITLE_BAR, "bg_normal"
-            )
-        except (AttributeError, RuntimeError):
-            bg = None
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(_color_hex(bg)) if bg else QColor("#1e1e1e"))
-        painter.end()
-        super().paintEvent(event)
-
-    def canDrag(self, pos) -> bool:
-        """No window-drag from menus or buttons (else a menu press could
-        start an OS move loop on some platforms)."""
-        from PySide6.QtWidgets import QAbstractButton, QLineEdit, QMenu, QMenuBar
-
-        child = self.childAt(pos)
-        while child is not None and child is not self:
-            if isinstance(child, (QMenuBar, QMenu, QAbstractButton, QLineEdit)):
-                return False
-            child = child.parent()
-        return super().canDrag(pos)
+    # paintEvent + canDrag are inherited from LaceStandardTitleBar (0.7.5):
+    # the base fills the live theme background and vetoes drags starting on
+    # QMenuBar/QMenu/QAbstractButton/QLineEdit children — our copies of both
+    # were doing exactly the same thing.
 
 
 class KilimWindow(FramelessLaceMainWindow):
@@ -1458,7 +1447,7 @@ class KilimWindow(FramelessLaceMainWindow):
         # Frameless chrome with the menus embedded in the title bar.
         super().__init__(title_bar=KilimTitleBar)
         from lace import DockManager, DockWidget
-        from lace.enums import DockWidgetArea
+        from lace import DockWidgetArea
 
         # If setup fails half-way (no window, but PTYs + loop thread alive),
         # don't orphan a runaway: stop the bridge before propagating.
@@ -1481,18 +1470,16 @@ class KilimWindow(FramelessLaceMainWindow):
         self.resize(1200, 800)
         self._setup_icon()
         self.manager = DockManager(self)
-        # Floats are frameless with the plain Lace title bar — the demo's
-        # per-window chrome pattern (`title_bar_mode` + `floating_title_bar`).
-        # The Kilim menus stay on the main window's bar; a float gets the
-        # themed Lace bar with its own icon / title / window buttons.
-        from lace import DockThemeBridge, TitleBarMode
+        # Floats are frameless with the plain Lace title bar. Lace 0.7.5
+        # resolves `floating_title_bar = None` to LaceStandardTitleBar
+        # itself, so only the mode is set; the Kilim menus stay on the main
+        # window's bar while a float gets the themed Lace bar with its own
+        # icon / title / window buttons. (The manager installs the palette
+        # bridges — dock tree and app-wide for top-level popups — on its
+        # own since 0.7.5; no manual DockThemeBridge.)
+        from lace import TitleBarMode
 
         self.manager.title_bar_mode = TitleBarMode.custom
-        self.manager.floating_title_bar = LaceStandardTitleBar
-        # Top-level popups (dock tab menus, pane context menus) read the
-        # application palette, not the dock root's — without the bridge
-        # they stay on the system palette while the bar is themed.
-        self.theme_bridge = DockThemeBridge()
         # Explicit, after the manager: keeps the title bar on top.
         self.setCentralWidget(self.manager._root)
         # Both sidebars exist from the start: title-bar pin buttons appear
@@ -1603,12 +1590,10 @@ class KilimWindow(FramelessLaceMainWindow):
         if active_view is not None:
             QTimer.singleShot(300, self._claim_pane_focus)
         # Chromium (the markdown preview) recreates the top-level native
-        # handle when the first QWebEngineView loads its page. The recreated
-        # frameless window drops WS_CAPTION/WS_THICKFRAME — no Win11 rounded
-        # corners, no Aero Snap. qframelesswindow's own FramelessWebEngineView
-        # calls updateFrameless() for this; the panes are built before the
-        # window is shown, so re-apply the frameless chrome once here.
-        self.updateFrameless()
+        # handle when the first QWebEngineView loads its page. Lace 0.7.5
+        # watches QEvent.WinIdChange and re-applies the frameless chrome
+        # (ensure_frameless_chrome) for exactly this, so no manual
+        # updateFrameless() is needed here anymore.
 
     def _setup_icon(self):
         """Kilim icon for the window (drawn in the title bar) and the app.
@@ -1852,7 +1837,7 @@ class KilimWindow(FramelessLaceMainWindow):
     def _add_viewer(self, path: str, kind: str, line: int | None = None):
         """Create the session pane + dock for one viewer file."""
         from lace import DockWidget
-        from lace.enums import DockWidgetArea
+        from lace import DockWidgetArea
 
         self._viewer_seq += 1
         pid = f"view{self._viewer_seq}"
@@ -1969,7 +1954,7 @@ class KilimWindow(FramelessLaceMainWindow):
         # Stock Lace presets stay out — the app exposes Kilim chrome.
         lace_menu = themes.addMenu("Lace")
         try:
-            from lace.dock_style_manager import apply_dock_theme, theme_groups
+            from lace import apply_dock_theme, theme_groups
 
             groups = [c for t, c in theme_groups() if t == "Kilim"]
             choices = groups[0] if groups else []
@@ -2077,7 +2062,7 @@ class KilimWindow(FramelessLaceMainWindow):
         same-named code + markdown themes and repaints (one click, all
         surfaces) — neo chrome selects the neo code/md themes.
         """
-        from lace.dock_style_manager import apply_dock_theme
+        from lace import apply_dock_theme
 
         if apply_dock_theme(key):
             self.lace_theme = key
@@ -2169,7 +2154,7 @@ class KilimWindow(FramelessLaceMainWindow):
     def launch_shell(self, name: str, cmd: str, args: list[str]):
         """Spawn a new shell pane (core) and dock it left."""
         from lace import DockWidget
-        from lace.enums import DockWidgetArea
+        from lace import DockWidgetArea
 
         self._term_seq += 1
         pid = f"term-new{self._term_seq}"

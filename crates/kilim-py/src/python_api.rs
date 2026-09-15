@@ -135,9 +135,13 @@ impl CoreSession {
         self.inner.write().unwrap().layout.code_blend = on;
     }
 
-    /// Blend a terminal cell's on-screen colors toward the theme
-    /// (`kilim_core::color::blend_cell`): `#rrggbb` in, `#rrggbb` out.
-    /// `weight` 0 returns the inputs unchanged; malformed hex raises.
+    /// Blend a terminal cell's *displayed* colors toward the theme
+    /// (`kilim_core::color::blend_painted`): `#rrggbb` in, `#rrggbb` out.
+    /// `fg`/`bg` are the roles after any reverse swap (default sides carry
+    /// the theme's ink/paper for their role); `fg_painted`/`bg_painted` say
+    /// whether the terminal painted each side — unpainted ones come back
+    /// exactly, so Kilim's mirrored cursor/selection stay crisp. `weight` 0
+    /// returns the inputs unchanged; malformed hex raises.
     fn blend_cell(
         &self,
         fg: &str,
@@ -145,13 +149,17 @@ impl CoreSession {
         theme_fg: &str,
         theme_bg: &str,
         weight: f64,
+        fg_painted: bool,
+        bg_painted: bool,
     ) -> PyResult<(String, String)> {
         let bad = |s: &str| pyo3::exceptions::PyValueError::new_err(format!("bad color '{s}'"));
-        let fg = kilim_core::Rgb::parse(fg).ok_or_else(|| bad(fg))?;
-        let bg = kilim_core::Rgb::parse(bg).ok_or_else(|| bad(bg))?;
-        let ink = kilim_core::Rgb::parse(theme_fg).ok_or_else(|| bad(theme_fg))?;
-        let paper = kilim_core::Rgb::parse(theme_bg).ok_or_else(|| bad(theme_bg))?;
-        let (f, b) = kilim_core::blend_cell(fg, bg, ink, paper, weight as f32);
+        let parse = |s: &str| kilim_core::Rgb::parse(s).ok_or_else(|| bad(s));
+        let fg = parse(fg)?;
+        let bg = parse(bg)?;
+        let ink = parse(theme_fg)?;
+        let paper = parse(theme_bg)?;
+        let (f, b) =
+            kilim_core::blend_painted(fg, bg, ink, paper, weight as f32, fg_painted, bg_painted);
         Ok((f.hex(), b.hex()))
     }
 

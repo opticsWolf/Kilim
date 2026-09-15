@@ -35,6 +35,12 @@ uv run maturin develop --uv
 python -m kilim.qt_app layouts/default.json
 ```
 
+The Qt surface needs `PySide6`, `qframelesswindow` and **`lace-dock` >= 0.7.5**
+(the `qt` extra). 0.7.5 is what the surface is built against: the shared
+`LaceStandardTitleBar` base (anchored embeds, drag vetoes, themed fill) and
+the WinIdChange frameless auto-heal that keeps Win11 rounding/Aero Snap after
+Chromium loads its first page — Kilim no longer carries that workaround.
+
 ## Layouts
 
 One file drives both surfaces — splits for the TUI, docks for Qt:

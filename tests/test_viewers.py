@@ -17,8 +17,9 @@ def scene(tmp_path):
     A window created from a sidecar-less layout applies the fresh-launch
     lace theme, which persists the theme into its layout file — a copy
     keeps parallel workers off the repo's `layouts/default.json`."""
-    layout = tmp_path / "l.json"
-    shutil.copy("layouts/default.json", layout)
+    from _util import copy_layout
+
+    layout = copy_layout("layouts/default.json", tmp_path / "l.json")
     return str(layout), str(tmp_path / "l.perspective.json")
 
 

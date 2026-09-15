@@ -12,12 +12,12 @@ def _window(layout="layouts/default.json"):
     """A shown KilimWindow. Repo layouts are copied to a temp dir first:
     windows write their sidecar (and a *chosen* theme its layout), and
     parallel workers must not race on the repo's files."""
-    import shutil
     import tempfile
     from pathlib import Path as _Path
 
     from PySide6.QtWidgets import QApplication
 
+    from _util import copy_layout
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
@@ -25,7 +25,7 @@ def _window(layout="layouts/default.json"):
     if not _Path(layout).is_absolute():
         tmp = _Path(tempfile.mkdtemp(prefix="kilim-window-"))
         local = tmp / _Path(layout).name
-        shutil.copy(layout, local)
+        copy_layout(layout, local)
         layout, sidecar = str(local), str(tmp / "l.perspective.json")
     w = KilimWindow(layout, sidecar)
     w.show()
@@ -259,15 +259,14 @@ def test_active_term_autofocused(tmp_path):
 
     Hermetic layout pair: the repo sidecar is live session state, and a
     saved arrangement can leave the active pane as a background tab."""
-    import shutil
-
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
     layout = tmp_path / "default.json"
-    shutil.copy("layouts/default.json", layout)
+    copy_layout("layouts/default.json", layout)
     w = KilimWindow(str(layout), str(tmp_path / "default.perspective.json"))
     w.show()
     try:
@@ -303,13 +302,13 @@ def test_terminal_menu_launches_shell():
 def test_themes_menu_switches_and_repaints(tmp_path):
     """Themes menu: code/md/lace actions apply, repaint, and persist."""
     import json
-    import shutil
 
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     # Hermetic copy: parallel workers must not race on the repo's layout.
     layout_file = tmp_path / "l.json"
-    shutil.copy("layouts/default.json", layout_file)
+    copy_layout("layouts/default.json", layout_file)
     app, w = _window(str(layout_file))
     try:
         menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
@@ -354,8 +353,8 @@ def test_themes_menu_switches_and_repaints(tmp_path):
 def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     """Kilim group heads the Lace menu; fresh windows open unified Midnight."""
     import json
-    import shutil
 
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow, register_kilim_lace_themes
@@ -377,7 +376,7 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
                                       "kilim_warm", "kilim_warm_neo"]
 
     layout = tmp_path / "fresh.json"
-    shutil.copy("layouts/default.json", layout)
+    copy_layout("layouts/default.json", layout)
     sidecar = tmp_path / "fresh.perspective.json"
     app, _ = _window()  # noqa: F841 — ensures QApplication exists
     w = KilimWindow(str(layout), str(sidecar))
@@ -409,8 +408,8 @@ def test_reset_layout_restores_the_file_arrangement(tmp_path):
     A saved sidecar that tabbed every pane into one area must not become
     the "default": the file's groups are what Reset Layout restores."""
     import json
-    import shutil
 
+    from _util import copy_layout
     from PySide6.QtWidgets import QApplication
 
     from kilim import perspective as perspectives
@@ -419,7 +418,7 @@ def test_reset_layout_restores_the_file_arrangement(tmp_path):
     app = QApplication.instance() or QApplication([])
     layout = tmp_path / "default.json"
     sidecar = tmp_path / "default.perspective.json"
-    shutil.copy("layouts/example.json", layout)
+    copy_layout("layouts/example.json", layout)
 
     w = KilimWindow(str(layout), str(sidecar))  # no sidecar: file arrangement
     w.show()

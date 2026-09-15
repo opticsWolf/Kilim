@@ -13,8 +13,9 @@ pytest.importorskip("lace")
 @pytest.fixture()
 def scene(tmp_path):
     """Hermetic (layout, sidecar) pair — Blend persists to the layout."""
-    layout = tmp_path / "l.json"
-    shutil.copy("layouts/default.json", layout)
+    from _util import copy_layout
+
+    layout = copy_layout("layouts/default.json", tmp_path / "l.json")
     return str(layout), str(tmp_path / "l.perspective.json")
 
 
@@ -35,6 +36,11 @@ def test_blend_menu_toggles_and_persists(scene):
     app, w = _window(layout, sidecar)
     try:
         term = next(iter(w.term_panes.values()))
+        # Blend persists in the layout, so a repo-shipped layout may have it
+        # on already: pin the starting state instead of assuming default.
+        if w.bridge.core.code_blend():
+            w.set_code_blend(False)
+            app.processEvents()
         assert term._blend == 0.0
         act = w._blend_action
         assert act.text() == "Blend"
@@ -72,6 +78,7 @@ def test_blend_mixes_explicit_cells_only(scene):
     try:
         term = next(iter(w.term_panes.values()))
         term._poller.stop()
+        term._blend = 0.0  # the test drives the switch itself
         fg0 = term.view.palette().color(term.view.foregroundRole())
         bg0 = term.view.palette().color(term.view.backgroundRole())
 
@@ -88,6 +95,12 @@ def test_blend_mixes_explicit_cells_only(scene):
         fmt = term._fmt(("default", "default", 0), fg0, bg0)
         assert fmt.foreground().color().name() == fg0.name()
         assert fmt.background().color().name() == bg0.name()
+
+        # A terminal default side stays exact even when the other side is a
+        # painted block (Kilim's cursor/selection are that shape).
+        fmt = term._fmt(("default", "#2d1b3d", 0), fg0, bg0)
+        assert fmt.foreground().color().name() == fg0.name()
+        assert fmt.background().color().name() != "#2d1b3d"
 
         # Reverse blocks blend on their swapped sides too.
         fmt = term._fmt(("#ffffff", "#000000", 1 << 5), fg0, bg0)
