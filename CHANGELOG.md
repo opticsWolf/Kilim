@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.61: markdown preview scrollbars tinted to the live Fusion colors (sampled by rendering, scrollbar-color + color-scheme).
 - v0.1.60: Win11 rounded outer corners restored (DWM corner preference, lost to the frameless hint).
 - v0.1.59: title-bar demo parity — DockThemeBridge (themed popups), Fusion style, explicit central widget, fallback window icon.
 - v0.1.58: frameless window with the menus embedded in a custom title bar (Lace demo pattern) — icon + Kilim title, then Views/Terminal/Themes; bar re-themes with the dock theme; floats keep the plain Lace bar.

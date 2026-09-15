@@ -122,3 +122,22 @@ def test_theme_names_are_the_kilim_eight():
                 "Kilim Neutral", "Kilim Neutral Neo", "Kilim Warm", "Kilim Warm Neo"]
     assert sorted(list_themes()) == sorted(expected)
     assert sorted(markdown_theme_names()) == sorted(expected)
+
+
+def test_fusion_scrollbar_css_sampled():
+    """Preview scrollbar CSS carries live sampled colors, never invented."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from kilim.qt_app import MarkdownPane, _fusion_scrollbar_css
+
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    css = _fusion_scrollbar_css()
+    assert css.startswith("html{scrollbar-color:#") and ";color-scheme:" in css
+    out = MarkdownPane._style_page("<html><head></head><body>x</body></html>")
+    assert "<style>" + css + "</style>" in out
+    assert out.index("<style>") < out.index("</head>")
+    assert MarkdownPane._style_page("<body>bare</body>").startswith("<style>")

@@ -920,6 +920,68 @@ class FilePane(QPlainTextEdit):
                 cur.insertText(text, fmt)
 
 
+def _fusion_scrollbar_css() -> str:
+    """Sample the live style's scrollbar colors for the markdown preview.
+
+    The preview is Chromium (QWebEngineView): Qt stylesheets can't reach
+    its scrollbars, but CSS `scrollbar-color` can. Colors are sampled by
+    rendering a scratch scrollbar twice (thumb top vs bottom — differing
+    pixels are the thumb) so they follow the live palette/bridge theme
+    instead of inventing greys. Borders and arrow buttons can't be
+    expressed in CSS: flat thumb + track is the honest approximation."""
+    try:
+        from collections import Counter
+
+        from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QApplication, QScrollBar
+
+        app = QApplication.instance()
+        if app is None:
+            return ""
+        bar = QScrollBar()
+        bar.resize(15, 200)
+        bar.setRange(0, 100)
+        bar.setPageStep(20)
+
+        def shot(v):
+            bar.setValue(v)
+            img = QImage(15, 200, QImage.Format_ARGB32)
+            img.fill(0)
+            bar.render(img)
+            return img
+
+        top, bottom = shot(0), shot(100)
+        thumb, groove = Counter(), Counter()
+        same = []
+        for y in range(200):
+            for x in range(15):
+                c = top.pixelColor(x, y).name()
+                if c != bottom.pixelColor(x, y).name():
+                    thumb[c] += 1
+                elif 6 <= x <= 8:
+                    same.append(c)  # center column: groove + button faces
+        if not thumb or not same:
+            return ""
+        thumb_hex = thumb.most_common(1)[0][0]
+        # Groove first: button faces share its color, glyphs are few
+        # pixels, and the thumb color is excluded (giant thumbs can sit
+        # still over the middle in both shots).
+        groove.update(c for c in same if c != thumb_hex)
+        track_hex = groove.most_common(1)[0][0] if groove else thumb_hex
+
+        def luminance(hexcol):
+            r, g, b = (int(hexcol[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+            lin = lambda v: v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+            return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+        scheme = "dark" if luminance(track_hex) < 0.4 else "light"
+        return (
+            f"html{{scrollbar-color:{thumb_hex} {track_hex};color-scheme:{scheme};}}"
+        )
+    except Exception:  # noqa: BLE001 — unstyled page beats no page
+        return ""
+
+
 class MarkdownPane(QWidget):
     """Markdown preview, pure Rust: core.markdown_page (mordant fragment
     + KaTeX shell). WebEngine when present, else rich text; highlighted
@@ -965,7 +1027,20 @@ class MarkdownPane(QWidget):
         return view
 
     @staticmethod
+    def _style_page(page: str) -> str:
+        # Chromium scrollbars ignore Qt stylesheets: tint them to the live
+        # Fusion colors (sampled, never invented) before handing over.
+        css = _fusion_scrollbar_css()
+        if not css:
+            return page
+        tag = f"<style>{css}</style>"
+        return page.replace("</head>", tag + "</head>") if "</head>" in page else tag + page
+
+    @staticmethod
     def _make_view(page: str | None):
+        if page is None:
+            return None
+        page = MarkdownPane._style_page(page)
         if page is None:
             return None
         try:
