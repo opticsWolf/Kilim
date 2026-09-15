@@ -8,8 +8,8 @@
 //! - Warm: Lace `warm` cozy brown.
 //!
 //! The syntect side starts from the closest existing theme and adjusts
-//! only the chrome (background/foreground/gutter) — token colors stay
-//! expressive as authored:
+//! only the chrome (background/foreground/selection) — token colors are
+//! the base theme's own functional scope rules, never rewritten here:
 //! - Midnight → Night Owl (deep-navy, vivid tokens)
 //! - Dark → Visual Studio Dark+ (the stock look)
 //! - Neutral → GitHub light (crisp on silver)
@@ -37,13 +37,6 @@ pub struct KilimThemeDef {
     pub base_syntect: &'static str,
     /// Neo sibling registry name (`Kilim Midnight Neo`, …).
     pub neo_name: &'static str,
-    /// Curated scope colors `(selector atom, hex)` for the standard theme:
-    /// recolors every rule containing the atom, appends a bare rule when
-    /// none does. Fills base gaps (thin themes) and fixes contrast
-    /// without touching tuned mappings. Empty = base covers everything.
-    pub scopes: &'static [(&'static str, &'static str)],
-    /// Same for the neo sibling.
-    pub neo_scopes: &'static [(&'static str, &'static str)],
     /// Its more colorful base.
     pub neo_base: &'static str,
     pub is_light: bool,
@@ -68,19 +61,6 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         base_syntect: "Night Owl-color-theme",
         neo_name: "Kilim Midnight Neo",
         neo_base: "Dracula",
-        scopes: &[
-            // Generic first: later entries win shared groups.
-            ("storage.modifier", "#ff869a"),
-            ("storage.type", "#c792ea"),
-            ("entity.name.type", "#c5e478"),
-            ("entity.name.class", "#c5e478"),
-            ("entity.name.function", "#82aaff"),
-        ],
-        neo_scopes: &[
-            ("entity.name.type", "#8be9fd"),
-            ("string.regexp", "#ff79c6"),
-            ("keyword.operator", "#ff79c6"),
-        ],
         is_light: false,
         // 2/3 Lace dark + 1/3 Lace midnight (computed, see README).
         editor_bg: "#101319",
@@ -101,18 +81,6 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         base_syntect: "Visual Studio Dark+",
         neo_name: "Kilim Dark Neo",
         neo_base: "OneDark-Pro",
-        // Both stock bases paint pub and fn the same blue/purple (Rust's
-        // grammar scopes `pub` as storage.modifier.rust); the exact atom
-        // gives pub a second accent, splitting a Rust signature — the
-        // family's shared probe. Dark+ also lacks bare entity.name.class
-        // (it only chains entity.name.type.class) and string.regexp; fill
-        // both so the canonical-atom sweep holds.
-        scopes: &[
-            ("storage.modifier.rust", "#c586c0"),
-            ("entity.name.class", "#4ec9b0"),
-            ("string.regexp", "#d16969"),
-        ],
-        neo_scopes: &[("storage.modifier.rust", "#61afef")],
         is_light: false,
         // Lace's stock default chrome: canvas #141414, panel/paper
         // #1e1e1e, #2d2d2d unfocused outline, Windows-blue accent.
@@ -131,21 +99,6 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         base_syntect: "GitHub",
         neo_name: "Kilim Neutral Neo",
         neo_base: "tokyo-night-light-color-theme",
-        scopes: &[
-            ("entity.name.type", "#445588"),
-            ("entity.name.class", "#445588"),
-            ("storage.type", "#009926"),
-            ("variable.parameter", "#df5000"),
-            ("markup.heading", "#183691"),
-            ("constant.character.escape", "#990073"),
-        ],
-        neo_scopes: &[
-            ("entity.name.type", "#7b43ba"),
-            ("entity.name.class", "#7b43ba"),
-            ("storage.type", "#006c86"),
-            ("storage.modifier", "#8c4351"),
-            ("markup.heading", "#2959aa"),
-        ],
         is_light: true,
         editor_bg: "#dddee0",
         bg: "#bec1c5",
@@ -162,22 +115,6 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         base_syntect: "OneHalfLight",
         neo_name: "Kilim Light Neo",
         neo_base: "ayu-light",
-        scopes: &[
-            ("entity.name.type", "#c18401"),
-            ("variable.parameter", "#e45649"),
-            ("constant.language", "#0997b3"),
-            ("support.type", "#c18401"),
-            ("keyword.operator", "#a626a4"),
-            ("storage.type", "#3651d9"),
-        ],
-        neo_scopes: &[
-            ("keyword", "#478acc"),
-            ("storage.modifier", "#478acc"),
-            ("storage.type", "#e65050"),
-            ("entity.name.type", "#e59645"),
-            ("entity.name.class", "#e59645"),
-            ("constant.character.escape", "#4cbf99"),
-        ],
         is_light: true,
         // Chrome is near-neutral with a whisper of cool (the stock Lace
         // light cast read too blue; ~4% saturation at the same lightness).
@@ -199,24 +136,6 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         base_syntect: "gruvbox-dark",
         neo_name: "Kilim Warm Neo",
         neo_base: "LaserWave-color-theme",
-        scopes: &[
-            ("constant.language", "#d3869b"),
-            // pub's rule shares storage.type.* with fn's but uniquely
-            // lists storage.type.annotation: narrow atom LAST wins pub
-            // back to red (later entries win shared groups).
-            ("storage.type", "#fe8019"),
-            ("storage.type.annotation", "#fb4934"),
-        ],
-        neo_scopes: &[
-            ("keyword", "#eb64b9"),
-            ("storage", "#a96bc0"),
-            ("entity.name.class", "#74dfc4"),
-            ("variable.parameter", "#ffb85b"),
-            ("support.type", "#40b4c4"),
-            ("support.class", "#40b4c4"),
-            ("string.regexp", "#eb64b9"),
-            ("constant.character.escape", "#ffe261"),
-        ],
         is_light: false,
         editor_bg: "#26201e",
         bg: "#26201e",
@@ -275,7 +194,6 @@ pub fn ensure_kilim_themes(
         name: &str,
         base_name: &str,
         def: &KilimThemeDef,
-        table: &[(&str, &str)],
     ) {
         if themes.themes.contains_key(name) {
             return;
@@ -302,8 +220,6 @@ pub fn ensure_kilim_themes(
         if let Some(sel) = parse(def.selection) {
             t.settings.selection = Some(sel);
         }
-        // Curated scope expansion (gap-fill + contrast fixes).
-        apply_scope_table(&mut t, table);
         // Neo shares the standard sibling's display settings wholesale
         // (line highlight, caret, brackets …): same background behavior,
         // only token colors differ.
@@ -318,78 +234,7 @@ pub fn ensure_kilim_themes(
     }
 
     for def in KILIM_THEMES {
-        build(extra_bases, themes, &mirror, def.syntect_name, def.base_syntect, def, def.scopes);
-        build(extra_bases, themes, &mirror, def.neo_name, def.neo_base, def, def.neo_scopes);
-    }
-}
-
-/// True when any selector path in the rule contains `atom` as a full
-/// scope element (`variable.parameter` matches
-/// `variable.parameter.function`, not `variable.parameterized`).
-/// Matched on the Debug rendering: syntect exposes no stable accessor,
-/// and the rendering is pinned by test.
-pub(crate) fn rule_has_atom(
-    rule: &syntect::highlighting::ThemeItem,
-    atom: &str,
-) -> bool {
-    let dbg = format!("{:?}", rule.scope);
-    let pat = format!("<{atom}");
-    let mut rest = dbg.as_str();
-    while let Some(i) = rest.find(&pat) {
-        match rest[i + pat.len()..].chars().next() {
-            Some('.') | Some('>') => return true,
-            _ => rest = &rest[i + pat.len()..],
-        }
-    }
-    false
-}
-
-/// Recolor every rule containing each table atom, then append a bare
-/// rule for atoms nothing matched (true gaps). Later entries win on
-/// overlap: order tables generic → specific.
-fn apply_scope_table(
-    t: &mut syntect::highlighting::Theme,
-    table: &[(&str, &str)],
-) {
-    use syntect::highlighting::{ScopeSelectors, StyleModifier, ThemeItem};
-
-    fn parse_hex(hex: &str) -> Option<syntect::highlighting::Color> {
-        let h = hex.trim_start_matches('#');
-        if h.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&h[0..2], 16),
-                u8::from_str_radix(&h[2..4], 16),
-                u8::from_str_radix(&h[4..6], 16),
-            ) {
-                return Some(syntect::highlighting::Color { r, g, b, a: 0xFF });
-            }
-        }
-        None
-    }
-
-    for (atom, hex) in table {
-        let Some(color) = parse_hex(hex) else {
-            eprintln!("kilim: bad scope hex '{hex}' for '{atom}', skipping");
-            continue;
-        };
-        let mut hit = false;
-        for item in t.scopes.iter_mut() {
-            if rule_has_atom(item, atom) {
-                item.style.foreground = Some(color);
-                hit = true;
-            }
-        }
-        if !hit {
-            match atom.parse::<ScopeSelectors>() {
-                Ok(scope) => t.scopes.push(ThemeItem {
-                    scope,
-                    style: StyleModifier {
-                        foreground: Some(color),
-                        ..Default::default()
-                    },
-                }),
-                Err(e) => eprintln!("kilim: bad scope atom '{atom}': {e}"),
-            }
-        }
+        build(extra_bases, themes, &mirror, def.syntect_name, def.base_syntect, def);
+        build(extra_bases, themes, &mirror, def.neo_name, def.neo_base, def);
     }
 }

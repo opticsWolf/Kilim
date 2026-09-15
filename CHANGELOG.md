@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.70: hand-maintained per-scope color tables removed — Kilim themes now adjust chrome only (paper/foreground/selection) and inherit their base theme's functional scope rules verbatim; the Dark Neo pub/render collision came from a patched storage.modifier.rust rule and goes with the tables.
 - v0.1.69: Kilim Light chrome neutralized — the stock Lace light-blue cast reduced to a faint cool tint (bg/surface/border/text/selection); paper stays white.
 - v0.1.68: Reset Layout restores the arrangement the layout file defines — the sidecar only restores a *session* at launch, so a saved layout can no longer masquerade as the default.
 - v0.1.67: legacy theme-name mapping removed (no aliases, no name canonicalization); the stock-chrome pair takes the freed name — Kilim Dark / Kilim Dark Neo (was Default / Default Neo).

@@ -447,10 +447,13 @@ mod tests {
         assert_eq!(neon.len(), 5);
     }
 
-        fn bat_bases_stay_pinned() {
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn bat_bases_stay_pinned() {
         use crate::kilim_themes::{BAT_BASES, KILIM_THEMES};
         // BUNDLED_THEMES is (stem, content): stems carry no extension.
-        let bundled: std::collections::HashSet<&str> = BUNDLED_THEMES.iter().map(|(n, _)| *n).collect();
+        let bundled: std::collections::HashSet<&str> =
+            BUNDLED_THEMES.iter().map(|(n, _)| *n).collect();
         for def in KILIM_THEMES {
             for base in [def.base_syntect, def.neo_base] {
                 let in_bat = BAT_BASES.contains(&base);
@@ -496,88 +499,41 @@ mod tests {
 
     #[test]
     #[cfg(feature = "markdown")]
-    fn scope_tables_cover_canonical_elements() {
-        use crate::kilim_themes::{KILIM_THEMES, rule_has_atom};
+    fn kilim_themes_keep_base_scope_rules_untouched() {
+        use crate::kilim_themes::KILIM_THEMES;
         ThemeRegistry::import_mordant_themes();
         let ts = themes().read().unwrap();
-        // Canonical element atoms; `variable.other` intentionally absent
-        // (object properties stay fg — coloring them floods).
-        let canon = [
-            "comment", "string", "keyword", "storage", "entity.name.function",
-            "entity.name.type", "entity.name.class", "entity.name.tag",
-            "entity.other.attribute-name", "variable.parameter",
-            "constant.numeric", "constant.language", "support.function",
-            "support.type", "support.class", "markup.heading", "string.regexp",
-            "constant.character.escape", "keyword.operator", "storage.type",
-        ];
+        // Bases are loaded locally by import (never registered), so fetch
+        // them the way the builder does: wheels first, bat assets next
+        // (membership-checked — get_theme falls back quietly).
+        let wheels: std::collections::HashMap<String, syntect::highlighting::Theme> =
+            bundled_themes().into_iter().collect();
+        let assets = syntect_assets::assets::HighlightingAssets::from_binary();
+        let have: std::collections::HashSet<&str> = assets.themes().collect();
+        // Token colors are the base theme's own functional scope rules
+        // (comment/string/keyword/storage/entity/…). The Kilim build
+        // adjusts chrome only: it must not rewrite, recolor or append a
+        // single scope rule — that is what a "regular" theme is.
         for def in KILIM_THEMES {
-            for name in [def.syntect_name, def.neo_name] {
-                let t = &ts.themes[name];
-                for atom in canon {
-                    assert!(
-                        t.scopes.iter().any(|item| rule_has_atom(item, atom)),
-                        "{name} has no rule for {atom}"
-                    );
-                }
-            }
-            // Tables are typo-guarded: every atom hits, every hex parses.
-            for (atom, hex) in def.scopes.iter().chain(def.neo_scopes.iter()) {
-                assert!(hex.len() == 7 && hex.starts_with('#'), "bad hex {hex}");
-                assert!(
-                    u8::from_str_radix(&hex[1..3], 16).is_ok(),
-                    "bad hex {hex}"
+            for (name, base_name) in [
+                (def.syntect_name, def.base_syntect),
+                (def.neo_name, def.neo_base),
+            ] {
+                let base = match wheels.get(base_name) {
+                    Some(t) => t.clone(),
+                    None => {
+                        assert!(have.contains(base_name), "base {base_name} unavailable");
+                        assets.get_theme(base_name).clone()
+                    }
+                };
+                let kilim = &ts.themes[name];
+                assert_eq!(
+                    format!("{:?}", kilim.scopes),
+                    format!("{:?}", base.scopes),
+                    "{name} rewrote its base theme's scope rules"
                 );
             }
         }
-        // Render spot-checks: appended bare rule (Warm Neo class name),
-        // recolored group (Neutral type, ex-black), recolored atom (Light
-        // boolean). Pins both application paths, not just rule presence.
-        let code = "class Foo(Bar):\n    return True\n";
-        let fg_of = |theme: &str, text: &str| -> String {
-            ThemeRegistry::highlight("python", code, theme)
-                .into_iter()
-                .flatten()
-                .find(|s| s.text == text)
-                .unwrap_or_else(|| panic!("{theme} never renders {text}"))
-                .fg
-                .clone()
-        };
-        assert_eq!(fg_of("Kilim Warm Neo", "Foo"), "#74dfc4");
-        assert_eq!(fg_of("Kilim Neutral", "Foo"), "#445588");
-        assert_eq!(fg_of("Kilim Light", "True"), "#0997b3");
-        // Dark splits pub/fn/render across storage/keyword/function.
-        let rust = "pub fn render() {}\n";
-        let rfg = |theme: &str, text: &str| -> String {
-            ThemeRegistry::highlight("rust", rust, theme)
-                .into_iter()
-                .flatten()
-                .find(|s| s.text == text)
-                .unwrap_or_else(|| panic!("{theme} never renders {text}"))
-                .fg
-                .clone()
-        };
-        assert_eq!(rfg("Kilim Midnight", "pub"), "#ff869a");
-        assert_eq!(rfg("Kilim Midnight", "fn"), "#c792ea");
-        assert_eq!(rfg("Kilim Midnight", "render"), "#82aaff");
-        // Light Neo pulls keywords off the orange pile (ayu blue).
-        assert_eq!(rfg("Kilim Light Neo", "pub"), "#478acc");
-        assert_eq!(rfg("Kilim Light Neo", "fn"), "#e65050");
-        assert_eq!(rfg("Kilim Light Neo", "render"), "#eba400");
-        // Every theme splits pub from fn (shared-group overlaps need
-        // per-theme atoms — the probe that caught Warm/Neutral).
-        for name in ThemeRegistry::list_themes() {
-            if name == "Tiny" {
-                continue; // parallel-test custom, out of scope
-            }
-            let p = rfg(&name, "pub");
-            let f = rfg(&name, "fn");
-            assert_ne!(p, f, "{name}: pub and fn share {p}");
-        }
-        assert_eq!(rfg("Kilim Warm", "pub"), "#fb4934");
-        assert_eq!(rfg("Kilim Warm", "fn"), "#fe8019");
-        assert_eq!(rfg("Kilim Neutral", "fn"), "#009926");
-        assert_eq!(rfg("Kilim Neutral Neo", "pub"), "#8c4351");
-        assert_eq!(rfg("Kilim Neutral Neo", "fn"), "#006c86");
     }
 
     #[test]
