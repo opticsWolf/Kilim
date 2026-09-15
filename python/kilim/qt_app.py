@@ -1222,15 +1222,17 @@ class KilimWindow(FramelessLaceMainWindow):
         self.setWindowTitle("Kilim")
         self.resize(1200, 800)
         self.manager = DockManager(self)
-        # Frameless floats keep the plain Lace title bar (no menus — those
-        # live in the main window's chrome only).
-        from lace import DockThemeBridge, TitleBarMode
-
-        self.manager.title_bar_mode = TitleBarMode.custom
-        self.manager.floating_title_bar = LaceStandardTitleBar
+        # Floats stay native OS windows (TitleBarMode.native, the default):
+        # real caption, taskbar presence, Aero Snap, Win+arrows — the full
+        # window-manager integration frameless floats can't have. Only the
+        # main window is frameless (that's what the embedded menu bar is).
+        # Float content (panes) is still Kilim-themed; just their outer
+        # title bar follows the OS.
         # Top-level popups (dock tab menus, pane context menus) read the
         # application palette, not the dock root's — without the bridge
         # they stay on the system palette while the bar is themed.
+        from lace import DockThemeBridge
+
         self.theme_bridge = DockThemeBridge()
         # Explicit, after the manager: keeps the title bar on top.
         self.setCentralWidget(self.manager._root)

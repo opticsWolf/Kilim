@@ -679,3 +679,28 @@ def test_lace_switch_defers_markdown_refresh():
     finally:
         w.close()
         app.processEvents()
+
+
+def test_floats_use_native_chrome():
+    """Torn-off panes are real OS windows (snap, taskbar, Win+arrows).
+
+    Only the main window is frameless; floats stay native via
+    TitleBarMode.native so the window manager integrates them fully."""
+    from PySide6.QtCore import Qt
+
+    from lace import TitleBarMode
+    from lace.floating_dock_container import FloatingDockContainer
+
+    app, w = _window()
+    try:
+        assert w.manager.title_bar_mode == TitleBarMode.native
+        assert w.manager.floating_container_class() is FloatingDockContainer
+        # A real torn-off pane: native flags, no frameless hint.
+        float_win = FloatingDockContainer(dock_widget=w.pane_docks["term1"])
+        try:
+            assert not (float_win.windowFlags() & Qt.FramelessWindowHint)
+        finally:
+            float_win.close()
+    finally:
+        w.close()
+        app.processEvents()
