@@ -1056,27 +1056,6 @@ class MarkdownPane(QWidget):
         return text
 
 
-def _round_window_corners(win) -> None:
-    """Restore the rounded outer corners lost to FramelessWindowHint.
-
-    Win11 DWM rounds captioned windows by itself; frameless ones default
-    to square unless asked. One attribute call restores parity with the
-    old native window (maximized state un-rounds itself). Best effort:
-    unknown platforms and compositor-less test runs just stay square."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        hwnd = int(win.winId())
-        pref = ctypes.c_int(2)  # DWMWCP_ROUND (33 = WINDOW_CORNER_PREFERENCE)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref)
-        )
-    except Exception:  # noqa: BLE001 — cosmetic only, never fatal
-        pass
-
-
 class KilimTitleBar(LaceStandardTitleBar, DockStyled):
     """Lace title bar with the Kilim menu bar embedded in the chrome.
 
@@ -1679,12 +1658,6 @@ class KilimWindow(FramelessLaceMainWindow):
                 break
             w = w.parentWidget()
         return self._active
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        if not getattr(self, "_corners_rounded", False):
-            self._corners_rounded = True
-            _round_window_corners(self)
 
     def closeEvent(self, e):
         try:

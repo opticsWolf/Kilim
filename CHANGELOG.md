@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.64: removed the ctypes DWM corner workaround — window setup back to demo shape; rounding now waits on the Lace-side fix.
 - v0.1.63: floating panes back to native OS windows (snap, taskbar, Win+arrows); only the main window stays frameless.
 - v0.1.62: markdown refresh deferred past the bridge palette push — preview scrollbar CSS no longer lags one theme switch behind.
 - v0.1.61: markdown preview scrollbars tinted to the live Fusion colors (sampled by rendering, scrollbar-color + color-scheme).
