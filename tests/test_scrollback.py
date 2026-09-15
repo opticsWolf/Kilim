@@ -241,11 +241,22 @@ def test_markdown_renders_pure_rust():
         bridge.stop()
 
 
-def test_active_term_autofocused():
-    """Unfocused text widgets draw no cursor — window must focus the shell."""
+def test_active_term_autofocused(tmp_path):
+    """Unfocused text widgets draw no cursor — window must focus the shell.
+
+    Hermetic layout pair: the repo sidecar is live session state, and a
+    saved arrangement can leave the active pane as a background tab."""
+    import shutil
+
     from PySide6.QtWidgets import QApplication
 
-    app, w = _window()
+    from kilim.qt_app import KilimWindow
+
+    app = QApplication.instance() or QApplication([])
+    layout = tmp_path / "default.json"
+    shutil.copy("layouts/default.json", layout)
+    w = KilimWindow(str(layout), str(tmp_path / "default.perspective.json"))
+    w.show()
     try:
         for _ in range(12):
             app.processEvents()
@@ -367,6 +378,66 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
         raw = json.loads(layout.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Light Neo"
         assert json.loads(sidecar.read_text(encoding="utf-8"))["lace_theme"] == "kilim_light_neo"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_reset_layout_restores_the_file_arrangement(tmp_path):
+    """Reset Layout returns to the layout file's split, not the sidecar.
+
+    A saved sidecar that tabbed every pane into one area must not become
+    the "default": the file's groups are what Reset Layout restores."""
+    import json
+    import shutil
+
+    from PySide6.QtWidgets import QApplication
+
+    from kilim import perspective as perspectives
+    from kilim.qt_app import KilimWindow
+
+    app = QApplication.instance() or QApplication([])
+    layout = tmp_path / "default.json"
+    sidecar = tmp_path / "default.perspective.json"
+    shutil.copy("layouts/default.json", layout)
+
+    w = KilimWindow(str(layout), str(sidecar))  # no sidecar: file arrangement
+    w.show()
+    try:
+        for _ in range(10):
+            app.processEvents()
+        data = perspectives.capture(w)
+    finally:
+        w.close()
+        app.processEvents()
+
+    # Degenerate saved state: every pane in one tab group.
+    blob = json.loads(data["lace"])
+    root = blob["containers"][0]["data"]["root_splitter"]
+    widgets = [wd for area in root["children"] if area["type"] == "Area"
+               for wd in area["widgets"]]
+    root["children"] = [{
+        "type": "Area", "tabs": len(widgets),
+        "current": widgets[-1]["name"], "widgets": widgets,
+    }]
+    root["count"] = 1
+    root["sizes"] = [1200]
+    data["kilim"]["tab_groups"] = [["term1", "code", "notes"]]
+    data["lace"] = json.dumps(blob)
+    perspectives.save(sidecar, data)
+
+    w = KilimWindow(str(layout), str(sidecar))
+    w.show()
+    try:
+        for _ in range(10):
+            app.processEvents()
+        assert perspectives.capture(w)["kilim"]["tab_groups"] == \
+            [["term1", "code", "notes"]], "sidecar not applied"
+        w.reset_layout()
+        for _ in range(20):
+            app.processEvents()
+        assert perspectives.capture(w)["kilim"]["tab_groups"] == \
+            [["term1"], ["code", "notes"]], "reset did not restore the file"
     finally:
         w.close()
         app.processEvents()

@@ -35,7 +35,7 @@ def test_layout_roundtrip(session):
     assert json.loads(session.layout_json())["active"] == "code"
 
 
-def test_themes_nonempty():
+def test_themes_nonempty(session):
     assert "Kilim Midnight" in list_themes()
     assert "Kilim Dark" in list_themes()
     assert len(list_syntaxes()) > 10
@@ -116,7 +116,7 @@ def test_markdown_theme_get_set_and_doc_persist(session):
         session.set_markdown_theme("Solarized (dark)")
 
 
-def test_theme_names_are_the_kilim_ten():
+def test_theme_names_are_the_kilim_ten(session):
     from kilim import list_themes, markdown_theme_names
 
     expected = ["Kilim Midnight", "Kilim Midnight Neo",

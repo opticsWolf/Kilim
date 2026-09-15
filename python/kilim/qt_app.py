@@ -1283,6 +1283,13 @@ class KilimWindow(FramelessLaceMainWindow):
                     # center + target = tabify (keeps manager registration).
                     self.manager.add_dock_widget(DockWidgetArea.center, dock, area_widget)
                 self.pane_docks[pid] = dock
+        # The arrangement the layout file defines, captured before the
+        # sidecar is applied: Reset Layout returns here. The sidecar is a
+        # *session* restore; it must not become the default.
+        try:
+            self._creation_state = self.manager.save_state()
+        except Exception:  # noqa: BLE001 — reset falls back to the sidecar
+            self._creation_state = None
         # Round-trip: restore previous dock geometry when names still match.
         sidecar = perspective_path or str(perspectives.sidecar_for(self.layout_path))
         self.perspective_path = sidecar
@@ -1667,11 +1674,30 @@ class KilimWindow(FramelessLaceMainWindow):
             dock.toggle_view(True)
 
     def reset_layout(self):
-        """Show all panes and re-apply the saved perspective (or creation layout)."""
+        """Show all panes and restore the layout file's creation arrangement.
+
+        The sidecar only restores a *session* at launch; Reset Layout is
+        the way back to the split/tab groups the layout file defines, using
+        the state captured just before the sidecar was applied. Only when
+        that capture failed does it fall back to the saved perspective."""
         self.restore_all_panes()
+        state = getattr(self, "_creation_state", None)
+        if state:
+            try:
+                if self.manager.restore_state(state):
+                    self._persist_perspective()
+                    return
+            except Exception:  # noqa: BLE001 — fall back to the sidecar
+                pass
         data = perspectives.load(self.perspective_path)
         if data is not None:
             perspectives.apply(self, data)
+
+    def _persist_perspective(self):
+        """Write the current arrangement (+ lace theme) to the sidecar."""
+        perspectives.save(self.perspective_path, perspectives.capture(self))
+        if self.lace_theme:  # save() rewrites the sidecar: re-stash.
+            self.save_lace_theme()
 
     def pane_of(self, dock) -> str:
         name = dock.objectName()
@@ -1697,9 +1723,7 @@ class KilimWindow(FramelessLaceMainWindow):
         except (RuntimeError, TypeError):
             pass  # never connected / already gone
         try:
-            perspectives.save(self.perspective_path, perspectives.capture(self))
-            if self.lace_theme:  # save() rewrites the sidecar: re-stash.
-                self.save_lace_theme()
+            self._persist_perspective()
         except Exception:  # noqa: BLE001 — sidecar must never block shutdown
             pass
         for pid in self.bridge.core.pane_ids():
