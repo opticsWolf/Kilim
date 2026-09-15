@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.65: title bar follows the Lace demo (shipped Kilim icon, hidden title label, menus right after the icon, Window menu, plus frameless custom bars on floating panes); markdown panes keep the native frame — Chromium's handle recreation no longer costs Win11 rounded corners or Aero Snap; dark/light get the unfocused dock-area outline warm/neutral already had.
 - v0.1.64: removed the ctypes DWM corner workaround — window setup back to demo shape; rounding now waits on the Lace-side fix.
 - v0.1.63: floating panes back to native OS windows (snap, taskbar, Win+arrows); only the main window stays frameless.
 - v0.1.62: markdown refresh deferred past the bridge palette push — preview scrollbar CSS no longer lags one theme switch behind.

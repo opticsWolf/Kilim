@@ -1059,12 +1059,11 @@ class MarkdownPane(QWidget):
 class KilimTitleBar(LaceStandardTitleBar, DockStyled):
     """Lace title bar with the Kilim menu bar embedded in the chrome.
 
-    VS Code-style unified bar: icon + Kilim title, then Views/Terminal/
-    Themes menus, then the window buttons. The menu bar is transparent so
-    the bar's own themed background shows through; popups pull their
-    colors from the same dock-theme tokens. Follows the Lace
-    `demo_app_custom_titlebar_menus` pattern (menus sit after our title
-    instead of replacing it like the demo)."""
+    VS Code-style unified bar: icon, then Views / Terminal / Themes /
+    Window menus, then the window buttons — the shape of Lace's
+    `demo_app_custom_titlebar_menus.MenuEmbeddedTitleBar`. The menu bar
+    is transparent so the bar's own themed background shows through;
+    popups pull their colors from the same dock-theme tokens."""
 
     STYLE_CATEGORIES = (DockStyleCategory.TITLE_BAR, DockStyleCategory.SIDEBAR, DockStyleCategory.CORE)
 
@@ -1073,13 +1072,40 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QMenuBar
 
+        # The embedded menus are the chrome content; the window title is
+        # not needed (demo pattern).
+        self.titleLabel.hide()
+
         self.menu_bar = QMenuBar(self)
         # Same height as the bar: one continuous surface, items centered.
         self.menu_bar.setFixedHeight(self.height())
-        # Base layout: stretch, icon, title, stretch, buttons — menus go
-        # after the title, before the middle stretch.
-        self.hBoxLayout.insertWidget(3, self.menu_bar, 0, Qt.AlignVCenter)
+        # Base layout: spacing, icon, title, stretch, buttons — insert the
+        # menu bar right after the icon and before the hidden title.
+        self.hBoxLayout.insertWidget(2, self.menu_bar, 0, Qt.AlignVCenter)
+
+        self._build_menus()
         self._init_dock_style()
+
+    def _build_menus(self) -> None:
+        """Create the menus the window populates, and keep their names.
+
+        The bar owns its menus (demo pattern), so callers never fish them
+        out of `menu_bar.actions()` by position."""
+        self.views_menu = self.menu_bar.addMenu("&Views")
+        self.terminal_menu = self.menu_bar.addMenu("&Terminal")
+        self.themes_menu = self.menu_bar.addMenu("&Themes")
+
+    def add_window_menu(self):
+        """Add the Window menu (Minimize / Toggle Maximize), as in the demo."""
+        from PySide6.QtGui import QAction
+
+        menu = self.menu_bar.addMenu("&Window")
+        menu.addAction(QAction("Minimize", self, triggered=self.window().showMinimized))
+        # toggle_max_state is Lace's single maximize path — the demo's
+        # showMaximized()/showNormal() pair cannot restore a frameless
+        # window Windows maximized natively (Aero Snap, Win+Up).
+        menu.addAction(QAction("Toggle Maximize", self, triggered=self.toggle_max_state))
+        return menu
 
     def refresh_style(self):
         """Theme the embedded menu bar from the active dock theme."""
@@ -1164,11 +1190,11 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
     def canDrag(self, pos) -> bool:
         """No window-drag from menus or buttons (else a menu press could
         start an OS move loop on some platforms)."""
-        from PySide6.QtWidgets import QAbstractButton, QMenu, QMenuBar
+        from PySide6.QtWidgets import QAbstractButton, QLineEdit, QMenu, QMenuBar
 
         child = self.childAt(pos)
         while child is not None and child is not self:
-            if isinstance(child, (QMenuBar, QMenu, QAbstractButton)):
+            if isinstance(child, (QMenuBar, QMenu, QAbstractButton, QLineEdit)):
                 return False
             child = child.parent()
         return super().canDrag(pos)
@@ -1200,26 +1226,22 @@ class KilimWindow(FramelessLaceMainWindow):
         self.bridge.call(lambda: self.bridge.core.ensure_terms())
         self.setWindowTitle("Kilim")
         self.resize(1200, 800)
+        self._setup_icon()
         self.manager = DockManager(self)
-        # Floats stay native OS windows (TitleBarMode.native, the default):
-        # real caption, taskbar presence, Aero Snap, Win+arrows — the full
-        # window-manager integration frameless floats can't have. Only the
-        # main window is frameless (that's what the embedded menu bar is).
-        # Float content (panes) is still Kilim-themed; just their outer
-        # title bar follows the OS.
+        # Floats are frameless with the plain Lace title bar — the demo's
+        # per-window chrome pattern (`title_bar_mode` + `floating_title_bar`).
+        # The Kilim menus stay on the main window's bar; a float gets the
+        # themed Lace bar with its own icon / title / window buttons.
+        from lace import DockThemeBridge, TitleBarMode
+
+        self.manager.title_bar_mode = TitleBarMode.custom
+        self.manager.floating_title_bar = LaceStandardTitleBar
         # Top-level popups (dock tab menus, pane context menus) read the
         # application palette, not the dock root's — without the bridge
         # they stay on the system palette while the bar is themed.
-        from lace import DockThemeBridge
-
         self.theme_bridge = DockThemeBridge()
         # Explicit, after the manager: keeps the title bar on top.
         self.setCentralWidget(self.manager._root)
-        if self.windowIcon().isNull():
-            from PySide6.QtWidgets import QStyle
-
-            fallback = self.style().standardIcon(QStyle.SP_TitleBarMenuButton)
-            self.setWindowIcon(fallback)
         # Both sidebars exist from the start: title-bar pin buttons appear
         # and explicit pin actions always have a target.
         self.manager.sidebar_manager.add_sidebar(DockWidgetArea.left)
@@ -1305,6 +1327,29 @@ class KilimWindow(FramelessLaceMainWindow):
         active_view = self.term_panes.get(self._active, None)
         if active_view is not None:
             QTimer.singleShot(300, self._claim_pane_focus)
+        # Chromium (the markdown preview) recreates the top-level native
+        # handle when the first QWebEngineView loads its page. The recreated
+        # frameless window drops WS_CAPTION/WS_THICKFRAME — no Win11 rounded
+        # corners, no Aero Snap. qframelesswindow's own FramelessWebEngineView
+        # calls updateFrameless() for this; the panes are built before the
+        # window is shown, so re-apply the frameless chrome once here.
+        self.updateFrameless()
+
+    def _setup_icon(self):
+        """Kilim icon for the window (drawn in the title bar) and the app.
+
+        Demo `_setup_icon` parity: `icon.ico` ships next to this file but
+        was never loaded, so the frameless chrome drew Qt's stock icon."""
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QStyle
+
+        icon = QIcon(str(Path(__file__).with_name("icon.ico")))
+        if icon.isNull() or icon.pixmap(16, 16).isNull():
+            icon = self.style().standardIcon(QStyle.SP_TitleBarMenuButton)
+        self.setWindowIcon(icon)
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
 
     def _inside_panes(self, w) -> bool:
         """True when the widget lives inside one of our pane containers."""
@@ -1375,7 +1420,7 @@ class KilimWindow(FramelessLaceMainWindow):
 
         Closing the last dock leaves an empty window; these actions are the
         way back (Lace re-docks on toggle_view(True))."""
-        views = self.titleBar.menu_bar.addMenu("&Views")
+        views = self.titleBar.views_menu
         for pid, dock in self.pane_docks.items():
             action = dock.toggle_view_action()
             action.setText(dock.windowTitle())
@@ -1385,7 +1430,7 @@ class KilimWindow(FramelessLaceMainWindow):
         show_all.triggered.connect(self.restore_all_panes)
         reset = views.addAction("Reset Layout")
         reset.triggered.connect(self.reset_layout)
-        terminal = self.titleBar.menu_bar.addMenu("&Terminal")
+        terminal = self.titleBar.terminal_menu
         shells = self._shell_options()
         if not shells:
             none = terminal.addAction("No shells found")
@@ -1397,6 +1442,7 @@ class KilimWindow(FramelessLaceMainWindow):
             )
         self._term_seq = 0
         self._build_themes_menu()
+        self.titleBar.add_window_menu()
 
     def _build_themes_menu(self):
         """Themes menu: Lace chrome, code (Qt + TUI), markdown fences.
@@ -1410,7 +1456,7 @@ class KilimWindow(FramelessLaceMainWindow):
 
         from kilim import list_themes
 
-        themes = self.titleBar.menu_bar.addMenu("&Themes")
+        themes = self.titleBar.themes_menu
 
         # Lace dock chrome: the Kilim group only (flat, radio-checked).
         # Stock Lace presets stay out — the app exposes Kilim chrome.
@@ -1609,7 +1655,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self.pane_docks[pid] = dock
         self.term_panes[pid] = inner
         inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
-        views = self.titleBar.menu_bar.actions()[0].menu()
+        views = self.titleBar.views_menu
         views.insertAction(views.actions()[0], dock.toggle_view_action())
         inner.view.setFocus()
 

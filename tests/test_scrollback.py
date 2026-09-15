@@ -681,24 +681,27 @@ def test_lace_switch_defers_markdown_refresh():
         app.processEvents()
 
 
-def test_floats_use_native_chrome():
-    """Torn-off panes are real OS windows (snap, taskbar, Win+arrows).
+def test_floats_use_custom_chrome():
+    """Torn-off panes get the demo's frameless custom title bar.
 
-    Only the main window is frameless; floats stay native via
-    TitleBarMode.native so the window manager integrates them fully."""
+    Floats run under ``TitleBarMode.custom`` with the plain Lace title
+    bar configured on the manager; the Kilim menus stay on the main
+    window's chrome only."""
     from PySide6.QtCore import Qt
 
     from lace import TitleBarMode
-    from lace.floating_dock_container import FloatingDockContainer
+    from lace.floating_dock_container_frameless import FramelessFloatingDockContainer
+    from lace.frameless_window import LaceStandardTitleBar
 
     app, w = _window()
     try:
-        assert w.manager.title_bar_mode == TitleBarMode.native
-        assert w.manager.floating_container_class() is FloatingDockContainer
-        # A real torn-off pane: native flags, no frameless hint.
-        float_win = FloatingDockContainer(dock_widget=w.pane_docks["term1"])
+        assert w.manager.title_bar_mode == TitleBarMode.custom
+        assert w.manager.floating_container_class() is FramelessFloatingDockContainer
+        # A real torn-off pane: frameless chrome, Lace's own title bar.
+        float_win = FramelessFloatingDockContainer(dock_widget=w.pane_docks["term1"])
         try:
-            assert not (float_win.windowFlags() & Qt.FramelessWindowHint)
+            assert float_win.windowFlags() & Qt.FramelessWindowHint
+            assert isinstance(float_win.titleBar, LaceStandardTitleBar)
         finally:
             float_win.close()
     finally:

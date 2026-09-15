@@ -84,7 +84,10 @@ pub const KILIM_THEMES: &[KilimThemeDef; 4] = &[
         editor_bg: "#101319",
         bg: "#101319",
         surface: "#161a23",
-        border: "#101319",
+        // Lace dark leaves border == bg, so the unfocused dock-area outline
+        // (CORE.border_color) is invisible. Kilim follows warm's treatment
+        // instead: border == surface, a faint lighter outline on the base.
+        border: "#161a23",
         text: "#cbd0dc",
         accent: "#325ac6",
         selection: "#26355c",
@@ -147,7 +150,10 @@ pub const KILIM_THEMES: &[KilimThemeDef; 4] = &[
         editor_bg: "#ffffff",
         bg: "#dadde1",
         surface: "#f5f7fa",
-        border: "#dadde1",
+        // Lace light leaves border == bg (invisible outline). Kilim follows
+        // neutral's darker unfocused outline: the same -20/channel step off
+        // bg that neutral takes (#bec1c5 -> #aaadb2).
+        border: "#c6c9cd",
         text: "#2d323c",
         accent: "#3651d9",
         selection: "#b9c6f5",
