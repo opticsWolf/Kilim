@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "binaryornot-rs",
  "mordant",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-py"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "kilim-core",
  "pyo3",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-tui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",

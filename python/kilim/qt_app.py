@@ -1478,7 +1478,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self.file_history: list[str] = []  # viewer files, newest first
         self.default_shell: tuple[str, str, list[str]] | None = None
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
-        self._viewer_anchor = None  # newest viewer dock (tabify target)
+        self._viewer_area = None  # viewer tab group's DockAreaWidget
 
         import json
 
@@ -1846,25 +1846,32 @@ class KilimWindow(FramelessLaceMainWindow):
         dock = DockWidget(title)
         dock.setObjectName(pid)
         dock.set_widget(inner)
-        target = self._viewer_anchor if self._viewer_alive() else None
+        target = self._live_viewer_area()
         if target is not None:
-            # Tabify under the open viewer group (center + target).
-            self.manager.add_dock_widget(DockWidgetArea.center, dock, target)
+            # Tabify into the open viewer group (center + *area* target:
+            # Lace's add_dock_widget expects a DockAreaWidget here).
+            self._viewer_area = self.manager.add_dock_widget(
+                DockWidgetArea.center, dock, target
+            )
         else:
-            self.manager.add_dock_widget(DockWidgetArea.right, dock)
-        self._viewer_anchor = dock
+            self._viewer_area = self.manager.add_dock_widget(DockWidgetArea.right, dock)
         self.pane_docks[pid] = dock
         dock.closed.connect(lambda pid=pid: self._dispose_viewer(pid))
         views = self.titleBar.views_menu
         views.insertAction(views.actions()[0], dock.toggle_view_action())
         return dock
 
-    def _viewer_alive(self) -> bool:
-        """The tabify anchor still exists (never touch a deleted dock)."""
+    def _live_viewer_area(self):
+        """The viewer tab group's area, or None (touching a deleted Qt
+        wrapper raises: a disposed dock may have taken the area with it)."""
+        if self._viewer_area is None:
+            return None
         try:
-            return self._viewer_anchor is not None and bool(self._viewer_anchor.objectName())
+            self._viewer_area.dock_widgets()
+            return self._viewer_area
         except RuntimeError:
-            return False
+            self._viewer_area = None
+            return None
 
     def _raise_viewer(self, dock) -> None:
         """Show + focus a viewer dock. Lace's own show path raises the tab
@@ -1898,15 +1905,6 @@ class KilimWindow(FramelessLaceMainWindow):
         if pane is None:
             return  # not a viewer (terminals stay restorable)
         dock = self.pane_docks.pop(pid, None)
-        if self._viewer_anchor is dock:  # tabify target: another open viewer
-            self._viewer_anchor = next(
-                (
-                    d
-                    for other, d in self.pane_docks.items()
-                    if other in self.file_panes or other in self.md_panes
-                ),
-                None,
-            )
         if dock is not None:
             act = dock.toggle_view_action()
             views = self.titleBar.views_menu

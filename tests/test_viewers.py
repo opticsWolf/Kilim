@@ -114,6 +114,16 @@ def test_clicking_a_path_opens_a_viewer_dock(scene, tmp_path):
         before2 = set(w.pane_docks)
         w.open_in_viewer(str(src), None, "code")
         assert set(w.pane_docks) == before2
+
+        # A *different* file opens a second dock, tabified into the same
+        # group (regression: the tabify target must be a dock area, not a
+        # dock — the first click never exercised this path).
+        second = tmp_path / "other.md"
+        second.write_text("# other\n", encoding="utf-8")
+        w.open_in_viewer(str(second), None, "markdown")
+        app.processEvents()
+        assert len(set(w.pane_docks) - before2) == 1
+        assert w.file_history[0] == str(second)
     finally:
         w.close()
         app.processEvents()
