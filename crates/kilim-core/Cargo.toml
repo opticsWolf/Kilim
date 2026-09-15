@@ -1,6 +1,6 @@
 [package]
 name = "kilim-core"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Headless core for Kilim: layout model, syntax highlighting, session state (no UI deps)"
 license = "MIT OR Apache-2.0"
@@ -21,7 +21,9 @@ mordant = { version = "0.10", optional = true, features = ["highlighter", "math"
 syntect-assets = { version = "0.23.6", optional = true, default-features = false }
 # Text-vs-binary probe for click-to-open paths (known-binary extensions
 # short-circuit before any read; the decision tree handles the rest).
+# encoding_rs also backs the lossless text reader for viewer panes.
 binaryornot-rs = "0.6"
+encoding_rs = "0.8"
 
 [features]
 default = []

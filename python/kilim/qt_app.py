@@ -1089,6 +1089,10 @@ class FilePane(QPlainTextEdit):
 
         from kilim import theme_background
 
+        try:
+            rows = list(self.bridge.core.highlighted_file(self.pane_id))
+        except (AttributeError, ValueError) as e:  # vanished/undecodable
+            rows = [[(f"Cannot display this file: {e}", "default", "default")]]
         page_bg = theme_background(self.bridge.core.theme()) or None
         if page_bg:
             pal = self.palette()
@@ -1102,7 +1106,7 @@ class FilePane(QPlainTextEdit):
         bg0 = self.palette().color(self.backgroundRole())
         self.clear()
         cur = self.textCursor()
-        for i, row in enumerate(self.bridge.core.highlighted_file(self.pane_id)):
+        for i, row in enumerate(rows):
             if i > 0:
                 cur.insertBlock()
             if block_fmt is not None:
@@ -1217,9 +1221,12 @@ class MarkdownPane(QWidget):
         """HTML for this pane: the raw file for html, else mordant."""
         if self.html_file:
             try:
-                text = Path(self.html_file).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                return None
+                text = self.bridge.core.read_text_file(self.html_file)
+            except (AttributeError, ValueError, OSError):
+                try:
+                    text = Path(self.html_file).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    return None
             return self._style_page(text)
         try:
             page = self.bridge.core.markdown_page(self.pane_id)
@@ -1240,9 +1247,14 @@ class MarkdownPane(QWidget):
             fb = QPlainTextEdit()
             fb.setReadOnly(True)
             fb.setFont(QFont("Cascadia Mono", 10))
-            fb.setPlainText("\n".join(
-                "".join(t for t, _, _ in row) for row in self.bridge.core.highlighted_file(self.pane_id)
-            ))
+            try:
+                source = "\n".join(
+                    "".join(t for t, _, _ in row)
+                    for row in self.bridge.core.highlighted_file(self.pane_id)
+                )
+            except (AttributeError, ValueError) as e:  # vanished/undecodable
+                source = f"Preview unavailable: {e}"
+            fb.setPlainText(source)
             view = fb
         return view
 
@@ -2035,8 +2047,12 @@ class KilimWindow(FramelessLaceMainWindow):
                 # bridge, the palette is current when we sample it.
                 for pane in self.md_panes.values():
                     QTimer.singleShot(0, pane.refresh)
-                self.save_themes()
             if persist:
+                # Only a *chosen* theme reaches the layout file: the
+                # fresh-launch/restored defaults must not rewrite the
+                # shared layout (readers race the write) — the sidecar
+                # already records what this session runs.
+                self.save_themes()
                 self.save_lace_theme()
             self._sync_theme_checks()
 

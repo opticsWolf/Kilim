@@ -59,6 +59,14 @@ impl CoreSession {
             .collect()
     }
 
+    /// Read a text file with the viewer's decoding rules (UTF-8, BOM'd
+    /// UTF-16/32, cp1252 fallback) — the html pane uses this so an
+    /// 8-bit-encoded page still renders.
+    fn read_text_file(&self, path: &str) -> PyResult<String> {
+        kilim_core::paths::read_text(std::path::Path::new(path))
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
     /// Viewer kind for one path (binaryornot-rs + extension routing,
     /// cached): `code` / `markdown` / `html` / `binary` / `missing`.
     fn classify_file(&self, path: &str) -> String {

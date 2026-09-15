@@ -315,7 +315,9 @@ impl Session {
             crate::layout::PaneKind::Markdown { path } => path.clone(),
             _ => return Err("markdown_html needs a Markdown pane".into()),
         };
-        let source = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        // Not `read_to_string`: a text file in any encoding must render
+        // (BOM-aware, cp1252 fallback) — binaryornot-rs already decided.
+        let source = crate::paths::read_text(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
         // GFM extensions are first-class but opt-in: tables, strikethrough
         // and task lists stay literal text without them (verified).
         use mordant::parser::ParserExtension as _;
@@ -444,7 +446,7 @@ impl Session {
                 return Err("term panes have no static highlight".into())
             }
         };
-        let code = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let code = crate::paths::read_text(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
         // Markdown-as-source (TUI) follows the markdown theme; code the code theme.
         let theme = match &pane.kind {
             crate::layout::PaneKind::Markdown { .. } => self.markdown_theme(),

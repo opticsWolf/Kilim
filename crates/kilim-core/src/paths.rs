@@ -142,6 +142,28 @@ fn extension_lower(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Read a text file for the viewer panes.
+///
+/// Files the classifier called text must never fail to open: UTF-8 passes
+/// through, a BOM selects UTF-16/32 (which the NUL guard explicitly lets
+/// through), and the remaining 8-bit encodings decode as Windows-1252 —
+/// lossless for every byte, so nothing is dropped or mojibake'd into `?`.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(decode_text(&bytes))
+}
+
+fn decode_text(bytes: &[u8]) -> String {
+    if let Some((enc, bom_len)) = encoding_rs::Encoding::for_bom(bytes) {
+        let (text, _, _) = enc.decode(&bytes[bom_len..]);
+        return text.into_owned();
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned(),
+    }
+}
+
 /// Resolve a written path against `cwd`, expanding `~` and (on Windows)
 /// Git-Bash `/c/...` roots, plus `file://` URLs. `None` when nothing on
 /// disk matches.
@@ -495,6 +517,29 @@ mod tests {
         assert_eq!(hits.len(), 1, "hits: {hits:?}");
         assert_eq!(hits[0].kind, FileKind::Code);
         assert!(hits[0].path.ends_with("u.txt"));
+    }
+
+    #[test]
+    fn read_text_handles_encodings() {
+        let d = dir("readtext");
+        let utf8 = d.join("u8.txt");
+        std::fs::write(&utf8, "héllo\n").unwrap();
+        assert_eq!(read_text(&utf8).unwrap(), "héllo\n");
+
+        // UTF-16 LE with BOM: binaryornot-rs calls it text (BOM opt-out of
+        // the NUL guard), so the reader must decode it as such.
+        let wide = d.join("u16.txt");
+        let mut bytes = vec![0xff, 0xfe];
+        for unit in "héllo".encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&wide, bytes).unwrap();
+        assert_eq!(read_text(&wide).unwrap().trim_end(), "héllo");
+
+        // Invalid UTF-8 without BOM: cp1252 keeps it readable.
+        let latin = d.join("latin.txt");
+        std::fs::write(&latin, b"caf\xe9\n").unwrap();
+        assert_eq!(read_text(&latin).unwrap(), "café\n");
     }
 
     #[test]

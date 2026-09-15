@@ -9,12 +9,25 @@ pytest.importorskip("lace")
 
 
 def _window(layout="layouts/default.json"):
+    """A shown KilimWindow. Repo layouts are copied to a temp dir first:
+    windows write their sidecar (and a *chosen* theme its layout), and
+    parallel workers must not race on the repo's files."""
+    import shutil
+    import tempfile
+    from pathlib import Path as _Path
+
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow(layout)
+    sidecar = None
+    if not _Path(layout).is_absolute():
+        tmp = _Path(tempfile.mkdtemp(prefix="kilim-window-"))
+        local = tmp / _Path(layout).name
+        shutil.copy(layout, local)
+        layout, sidecar = str(local), str(tmp / "l.perspective.json")
+    w = KilimWindow(layout, sidecar)
     w.show()
     return app, w
 

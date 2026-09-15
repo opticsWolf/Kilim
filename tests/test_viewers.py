@@ -221,6 +221,29 @@ def test_default_shell_and_history_persist_in_the_sidecar(scene, tmp_path):
     assert json.loads(Path(persp).read_text(encoding="utf-8"))["file_history"] == []
 
 
+def test_non_utf8_text_files_open(scene, tmp_path):
+    """binaryornot calls these text; the viewers must not choke on them
+    (regression: a cp1252 file raised "stream did not contain valid UTF-8")."""
+    app, w = _window(*scene)
+    try:
+        latin_md = tmp_path / "latin.md"
+        latin_md.write_bytes(b"# caf\xe9\n")
+        latin_txt = tmp_path / "latin.txt"
+        latin_txt.write_bytes(b"caf\xe9\n")
+        wide_md = tmp_path / "wide.md"  # UTF-16 LE with BOM
+        wide_md.write_bytes(b"\xff\xfe" + "h\xe9llo".encode("utf-16-le"))
+        for p in (latin_md, latin_txt, wide_md):
+            assert w.bridge.core.classify_file(str(p)) in ("code", "markdown"), p
+            w.open_in_viewer(str(p), None, None)  # must not raise
+        app.processEvents()
+        assert len([p for p in w.pane_docks if p.startswith("view")]) == 3
+        assert "caf" in w.bridge.core.read_text_file(str(latin_md))
+        assert "h\xe9llo" in w.bridge.core.read_text_file(str(wide_md))
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_history_drops_vanished_files(scene, tmp_path):
     app, w = _window(*scene)
     try:
