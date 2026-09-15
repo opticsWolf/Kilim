@@ -1527,8 +1527,13 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.bridge.core.set_markdown_theme(syntect)
                 for pane in self.file_panes.values():
                     pane.refresh()
+                # Markdown refresh is deferred: the theme bridge pushes the
+                # app palette via singleShot(0), so a direct refresh here
+                # would sample the previous theme's colors — scrollbar CSS
+                # lagging exactly one switch behind. Queued after the
+                # bridge, the palette is current when we sample it.
                 for pane in self.md_panes.values():
-                    pane.refresh()
+                    QTimer.singleShot(0, pane.refresh)
                 self.save_themes()
             if persist:
                 self.save_lace_theme()

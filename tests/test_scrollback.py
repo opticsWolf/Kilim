@@ -644,3 +644,38 @@ def test_bell_dots_tab():
     finally:
         w.close()
         app.processEvents()
+
+
+def test_lace_switch_defers_markdown_refresh():
+    """md refresh queues behind the bridge palette push (no 1-switch lag).
+
+    The bridge applies the app palette via singleShot(0); a direct
+    pane.refresh() inside apply_lace_theme would sample the previous
+    theme's colors for the scrollbar CSS."""
+    from unittest.mock import patch
+
+    from PySide6.QtCore import QTimer
+
+    app, w = _window()
+    try:
+        calls = []
+        real = QTimer.singleShot
+
+        def rec(*args):
+            calls.append(args)
+            return real(*args)
+
+        with patch("kilim.qt_app.QTimer.singleShot", side_effect=rec):
+            w.apply_lace_theme("kilim_warm")
+        app.processEvents()
+        assert w.md_panes, "default layout must have a markdown pane"
+        for pane in w.md_panes.values():
+            assert any(
+                len(a) == 2 and a[0] == 0
+                and getattr(a[1], "__self__", None) is pane
+                and getattr(getattr(a[1], "__func__", None), "__name__", "") == "refresh"
+                for a in calls
+            ), "md refresh not deferred past the bridge push"
+    finally:
+        w.close()
+        app.processEvents()

@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.1.62: markdown refresh deferred past the bridge palette push — preview scrollbar CSS no longer lags one theme switch behind.
 - v0.1.61: markdown preview scrollbars tinted to the live Fusion colors (sampled by rendering, scrollbar-color + color-scheme).
 - v0.1.60: Win11 rounded outer corners restored (DWM corner preference, lost to the frameless hint).
 - v0.1.59: title-bar demo parity — DockThemeBridge (themed popups), Fusion style, explicit central widget, fallback window icon.
