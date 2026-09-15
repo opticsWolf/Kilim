@@ -627,6 +627,56 @@ def _fake_snap(rows, start=0, total=None, cursor=(0, 0), dirty=None):
     }
 
 
+def _cell_format(block, ci):
+    """QTextCharFormat of the fragment covering char offset ci of a block."""
+    it = block.begin()
+    while not it.atEnd():
+        frag = it.fragment()
+        if frag.position() <= block.position() + ci < frag.position() + len(frag.text()):
+            return frag.charFormat()
+        it += 1
+    return None
+
+
+def test_terminal_cursor_is_a_blinking_block():
+    """Qt draws no caret in a read-only view (regression: "no cursor in
+    the Qt terminal"): the cell under the terminal cursor is reverse-video,
+    it follows cursor moves, and the blink toggles it without counting as
+    a content repaint."""
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._render(_fake_snap([["a", "b", "c", "d"], ["e", "f", "g", "h"]], cursor=(2, 1)))
+        doc = term.view.document()
+        fg = term.view.palette().color(term.view.foregroundRole())
+        bg = term.view.palette().color(term.view.backgroundRole())
+
+        on = _cell_format(doc.findBlockByNumber(1), 2)
+        assert on is not None
+        assert on.foreground().color() == bg and on.background().color() == fg
+        # Neighbour cell untouched: only the cursor cell reverses.
+        plain = _cell_format(doc.findBlockByNumber(1), 1)
+        assert plain.foreground().color() == fg and plain.background().color() == bg
+
+        # Blink: phase off paints the plain cell and is not a content frame.
+        frozen = term._render_count
+        term._blink_caret()
+        off = _cell_format(doc.findBlockByNumber(1), 2)
+        assert off.foreground().color() == fg and off.background().color() == bg
+        assert term._render_count == frozen
+        term._blink_caret()
+        assert _cell_format(doc.findBlockByNumber(1), 2).background().color() == fg
+
+        # A move with unchanged content carries the block to the new cell.
+        term._render(_fake_snap([["a", "b", "c", "d"], ["e", "f", "g", "h"]], cursor=(0, 0)))
+        assert _cell_format(doc.findBlockByNumber(0), 0).background().color() == fg
+        assert _cell_format(doc.findBlockByNumber(1), 2).background().color() == bg
+        assert term._caret_on is True  # a move re-shows the block
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_incremental_repaint_touches_one_row():
     """Dirty-region paint: one changed row = one more frame, rest intact."""
     from PySide6.QtGui import QTextCursor

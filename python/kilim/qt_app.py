@@ -385,6 +385,19 @@ class TerminalPane(QWidget):
         self._poller = QTimer(self)
         self._poller.timeout.connect(self._poll)
         self._poller.start(60)
+        # Soft block cursor (see _caret_cell): Qt draws no caret in a
+        # read-only QPlainTextEdit, so the cell under the terminal cursor
+        # is reverse-video, painted with the rows, blinking on the
+        # system's caret clock.
+        self._cells = None  # last painted viewport rows (caret repaints)
+        self._cells_start = 0
+        self._caret_on = True
+        self._caret_timer = QTimer(self)
+        self._caret_timer.timeout.connect(self._blink_caret)
+        flash = QApplication.styleHints().cursorFlashTime()
+        self._blink_ms = max(100, flash // 2) if flash > 0 else 0
+        if self._blink_ms:
+            self._caret_timer.start(self._blink_ms)
 
     # ── poll ──
     def _poll(self):
@@ -512,31 +525,38 @@ class TerminalPane(QWidget):
         bg0 = self.view.palette().color(self.view.backgroundRole())
         rows = snap["cells"]
         lo, n = snap["start"], len(rows)
+        self._cells = rows  # caret repaints read this between polls
+        self._cells_start = snap["start"]
+        caret = self._caret_cell(snap["start"], snap["cursor"], n)
         if self._paint_rows == snap["rows"] and self._paint_start == snap["start"]:
             vis = sorted(r - lo for r in snap.get("dirty") or [] if lo <= r < lo + n)
             if vis:
-                self._paint_subset(rows, vis, fg0, bg0)
+                self._paint_subset(rows, vis, fg0, bg0, caret)
         else:
-            self._paint_full(rows, fg0, bg0)
+            self._paint_full(rows, fg0, bg0, caret)
             self._paint_rows = snap["rows"]
             self._paint_start = snap["start"]
 
-    def _paint_full(self, rows, fg0, bg0):
+    def _paint_full(self, rows, fg0, bg0, caret=None):
         """Wipe + rebuild (first paint, resize, theme switch)."""
         self._render_count += 1
         self.view.clear()
         cur = self.view.textCursor()
         cur.beginEditBlock()  # one layout pass for the whole rebuild
         try:
-            for row in rows:
-                self._insert_runs(cur, row, fg0, bg0)
+            for i, row in enumerate(rows):
+                self._insert_runs(cur, row, fg0, bg0, caret[1] if caret and caret[0] == i else None)
                 cur.insertBlock()
         finally:
             cur.endEditBlock()
         self._cursor_at = None  # document is new: reposition unconditionally
 
-    def _paint_subset(self, rows, indices, fg0, bg0):
-        """Rewrite exactly the given visible rows (dirty set)."""
+    def _paint_subset(self, rows, indices, fg0, bg0, caret=None, count=True):
+        """Rewrite exactly the given visible rows (dirty set).
+
+        `caret` = viewport (row, col) of the soft block to bake in;
+        blink repaints pass count=False so overlay frames don't read as
+        content repaints."""
         doc = self.view.document()
         cur = QTextCursor(doc)
         cur.beginEditBlock()
@@ -550,19 +570,23 @@ class TerminalPane(QWidget):
                     continue
                 cur.setPosition(block.position())
                 cur.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-                self._insert_runs(cur, rows[i], fg0, bg0)
+                self._insert_runs(cur, rows[i], fg0, bg0, caret[1] if caret and caret[0] == i else None)
                 touched = True
         finally:
             cur.endEditBlock()
-        if touched:
+        if touched and count:
             self._render_count += 1
 
-    def _insert_runs(self, cur, row, fg0, bg0):
-        """Insert one viewport row, merging adjacent same-style cells."""
+    def _insert_runs(self, cur, row, fg0, bg0, caret_col=None):
+        """Insert one viewport row, merging adjacent same-style cells.
+
+        The cell at `caret_col` is reverse-video (TUI soft-cursor parity)."""
         run_text: list[str] = []
         run_key = None
-        for text, fg, bg, attrs in row:
+        for ci, (text, fg, bg, attrs) in enumerate(row):
             key = (fg, bg, attrs)
+            if caret_col is not None and ci == caret_col:
+                key = (bg, fg, attrs ^ (1 << 5))
             if key != run_key:
                 if run_text:
                     cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
@@ -572,11 +596,49 @@ class TerminalPane(QWidget):
         if run_text:
             cur.insertText("".join(run_text), self._fmt(run_key, fg0, bg0))
 
-    def _cursor_to(self, cursor, start, nrows):
-        """Reposition only on move: untouched polls keep Qt's native blink."""
-        if tuple(cursor) == self._cursor_at:
+    def _caret_cell(self, start, cursor, nrows):
+        """Viewport (row, col) of the soft block cursor, or None."""
+        if not self._caret_on:
+            return None
+        cx, cy_abs = cursor
+        row = cy_abs - start
+        return (row, cx) if 0 <= row < nrows else None
+
+    def _repaint_row(self, abs_line):
+        """Repaint one cached row (cursor move/blink: content unchanged)."""
+        if self._cells is None:
             return
+        i = abs_line - self._cells_start
+        if not (0 <= i < len(self._cells)):
+            return
+        fg0 = self.view.palette().color(self.view.foregroundRole())
+        bg0 = self.view.palette().color(self.view.backgroundRole())
+        caret = self._caret_cell(self._cells_start, self._cursor_at, len(self._cells))
+        self._paint_subset(self._cells, [i], fg0, bg0, caret, count=False)
+
+    def _blink_caret(self):
+        """Toggle the block cursor phase; only its own row repaints."""
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return  # live drag: leave the selection alone
+        self._caret_on = not self._caret_on
+        if self._cursor_at is not None:
+            self._repaint_row(self._cursor_at[1])
+
+    def _cursor_to(self, cursor, start, nrows):
+        """Track the terminal cursor and paint its block on move.
+
+        A move re-show the block and restarts the blink phase, like a
+        terminal: the rows left and entered are repainted from the cached
+        cells (a move need not dirty any row)."""
+        prev = self._cursor_at
         self._cursor_at = tuple(cursor)
+        if prev == self._cursor_at:
+            return
+        self._caret_on = True
+        if self._blink_ms:
+            self._caret_timer.start(self._blink_ms)  # sync the phase
+        if prev is not None and prev[1] != self._cursor_at[1]:
+            self._repaint_row(prev[1])  # clear the old block
         if QApplication.mouseButtons() != Qt.NoButton:
             return  # live drag: don't yank the selection anchor
         cx, cy_abs = cursor
@@ -591,6 +653,7 @@ class TerminalPane(QWidget):
         c = QTextCursor(doc)
         c.setPosition(block.position() + min(ci, len(block.text())))
         self.view.setTextCursor(c)
+        self._repaint_row(cy_abs)  # draw the block on its new row
 
     def _capture_selection(self):
         """Qt selection -> absolute history coords (survives repaints)."""
