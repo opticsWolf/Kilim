@@ -499,45 +499,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "markdown")]
-    fn kilim_themes_keep_base_scope_rules_untouched() {
-        use crate::kilim_themes::KILIM_THEMES;
-        ThemeRegistry::import_mordant_themes();
-        let ts = themes().read().unwrap();
-        // Bases are loaded locally by import (never registered), so fetch
-        // them the way the builder does: wheels first, bat assets next
-        // (membership-checked — get_theme falls back quietly).
-        let wheels: std::collections::HashMap<String, syntect::highlighting::Theme> =
-            bundled_themes().into_iter().collect();
-        let assets = syntect_assets::assets::HighlightingAssets::from_binary();
-        let have: std::collections::HashSet<&str> = assets.themes().collect();
-        // Token colors are the base theme's own functional scope rules
-        // (comment/string/keyword/storage/entity/…). The Kilim build
-        // adjusts chrome only: it must not rewrite, recolor or append a
-        // single scope rule — that is what a "regular" theme is.
-        for def in KILIM_THEMES {
-            for (name, base_name) in [
-                (def.syntect_name, def.base_syntect),
-                (def.neo_name, def.neo_base),
-            ] {
-                let base = match wheels.get(base_name) {
-                    Some(t) => t.clone(),
-                    None => {
-                        assert!(have.contains(base_name), "base {base_name} unavailable");
-                        assets.get_theme(base_name).clone()
-                    }
-                };
-                let kilim = &ts.themes[name];
-                assert_eq!(
-                    format!("{:?}", kilim.scopes),
-                    format!("{:?}", base.scopes),
-                    "{name} rewrote its base theme's scope rules"
-                );
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "markdown")]
     fn background_falls_back_like_highlight() {
         ThemeRegistry::import_mordant_themes();
         let known = ThemeRegistry::background("Kilim Midnight");
@@ -621,4 +582,97 @@ mod tests {
         assert_eq!(rows.len(), 2);
     }
 
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn functional_elements_have_distinct_colors() {
+        use crate::kilim_themes::KILIM_THEMES;
+        ThemeRegistry::import_mordant_themes();
+        let rust = r#"// c
+pub fn render(x: i32) -> bool {
+    let s = "a";
+    if x > 42 { return true; }
+}
+"#;
+        let py = r#"# c
+class Foo(Bar):
+    def method(self, arg):
+        pass
+"#;
+        // (label, table selector, lang, probe token)
+        let probes: &[(&str, &str, &str, &str)] = &[
+            ("comment", "comment", "rust", "c"),
+            ("string", "string", "rust", "a"),
+            ("keyword", "keyword", "rust", "if"),
+            ("decl", "storage.type", "rust", "fn"),
+            ("modifier", "storage.modifier", "rust", "pub"),
+            ("function", "entity.name.function", "rust", "render"),
+            ("type", "entity.name.class", "python", "Foo"),
+            ("param", "variable.parameter", "python", "arg"),
+            ("number", "constant.numeric", "rust", "42"),
+            ("constant", "constant.language", "rust", "true"),
+        ];
+        // Redmean color distance (perceptual-ish, cheap): the same
+        // metric the token palettes were authored with.
+        fn dist(a: &str, b: &str) -> f64 {
+            let c = |h: &str| {
+                let h = h.trim_start_matches('#');
+                (
+                    u8::from_str_radix(&h[0..2], 16).unwrap() as f64,
+                    u8::from_str_radix(&h[2..4], 16).unwrap() as f64,
+                    u8::from_str_radix(&h[4..6], 16).unwrap() as f64,
+                )
+            };
+            let (r1, g1, b1) = c(a);
+            let (r2, g2, b2) = c(b);
+            let (dr, dg, db) = (r1 - r2, g1 - g2, b1 - b2);
+            let rm = (r1 + r2) / 2.0;
+            ((2.0 + rm / 256.0) * dr * dr
+                + 4.0 * dg * dg
+                + (2.0 + (255.0 - rm) / 256.0) * db * db)
+                .sqrt()
+        }
+        for def in KILIM_THEMES {
+            for (name, table) in [
+                (def.syntect_name, def.tokens),
+                (def.neo_name, def.neo_tokens),
+            ] {
+                let expected = |selector: &str| {
+                    table
+                        .iter()
+                        .find(|(s, _)| *s == selector)
+                        .map(|(_, h)| *h)
+                        .unwrap_or_else(|| panic!("{name}: no token entry for {selector}"))
+                };
+                let mut cols: Vec<(&str, String)> = Vec::new();
+                for (label, selector, lang, tok) in probes {
+                    let code = if *lang == "rust" { rust } else { py };
+                    let got = ThemeRegistry::highlight(lang, code, name)
+                        .into_iter()
+                        .flatten()
+                        .find(|s| s.text.trim() == *tok)
+                        .unwrap_or_else(|| panic!("{name} never renders {tok}"))
+                        .fg
+                        .clone();
+                    assert_eq!(got, expected(selector), "{name}: {label} token color");
+                    cols.push((label, got));
+                }
+                // Every canonical element is visibly distinct: the
+                // tables hold a >=60 design floor under this metric.
+                for i in 0..cols.len() {
+                    for j in (i + 1)..cols.len() {
+                        let d = dist(&cols[i].1, &cols[j].1);
+                        assert!(
+                            d >= 55.0,
+                            "{name}: {} {} and {} {} are too close (d={d:.0})",
+                            cols[i].0,
+                            cols[i].1,
+                            cols[j].0,
+                            cols[j].1
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
