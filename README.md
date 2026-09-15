@@ -99,12 +99,9 @@ the closest expressive base, chrome-only adjustment); unknown theme names
 raise instead of silently falling back. Custom `.tmTheme` files can still be
 registered explicitly via `register_custom_theme`.
 
-**Blend** (Themes → Code → Blend) mixes the color blocks that other apps
-paint — agent chips like `pi`, linter highlights — into the active theme:
-backgrounds toward its paper, text toward its ink, with a contrast floor so
-nothing turns unreadable (a dark chip on a light theme stays legible). The
-flag lives in the layout file, so both surfaces blend the same cells the
-same way; the math is shared core code (`kilim_core::color`).
+Terminal content is never re-themed: cells take the theme's ink/paper only
+where the shell left them at "default", and everything a tool painted
+(ANSI blocks, truecolor chips like `pi`'s) renders exactly as emitted.
 
 ## Develop
 

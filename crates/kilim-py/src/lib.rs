@@ -15,7 +15,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(python_api::kilim_themes_json, m)?)?;
     m.add_function(wrap_pyfunction!(python_api::theme_background, m)?)?;
     m.add_function(wrap_pyfunction!(python_api::theme_foreground, m)?)?;
-    m.add_function(wrap_pyfunction!(python_api::blend_weight, m)?)?;
     #[cfg(feature = "markdown")]
     m.add_function(wrap_pyfunction!(python_api::markdown_theme_names, m)?)?;
     Ok(())

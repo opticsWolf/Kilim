@@ -46,11 +46,6 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
-def _painted(color: str) -> bool:
-    """True when the terminal painted this cell side (not "default")."""
-    return (color or "").strip().lower() not in ("", "default")
-
-
 def cell_qcolor(s: str, default: QColor) -> QColor:
     t = (s or "").strip().lower()
     if not t or t == "default":
@@ -426,14 +421,6 @@ class TerminalPane(QWidget):
         self._wheel_accum = 0  # fractional scroll accumulation (smooth pads)
         self._link_cache: dict[str, list] = {}  # row text -> openable hits
         self._open_path = lambda *_: None  # wired by the window
-        # Themes → Code → Blend: weight for mixing tool-painted colors
-        # toward the theme (0 = off). Shared flag, so the TUI agrees.
-        try:
-            from kilim import blend_weight
-
-            self._blend = blend_weight() if self.bridge.core.code_blend() else 0.0
-        except (AttributeError, ImportError, ValueError):
-            self._blend = 0.0
         self._poller = QTimer(self)
         self._poller.timeout.connect(self._poll)
         self._poller.start(60)
@@ -932,48 +919,14 @@ class TerminalPane(QWidget):
         elif total != self._seen_total:
             self._set_badge(True)
 
-    _BLEND_CACHE: dict = {}  # (fg,bg,ink,paper,weight) -> blended QColors
-
-    def _blended(self, fgc: QColor, bgc: QColor, fg0: QColor, bg0: QColor, painted: tuple[bool, bool]):
-        """Mix a cell pair toward the theme (Blend). Only sides the terminal
-        painted take part; `None` sides stay exact. Cached: a frame holds few
-        distinct colors, and the math lives in Rust so both surfaces blend
-        identically."""
-        key = (fgc.name(), bgc.name(), fg0.name(), bg0.name(), self._blend, painted)
-        pair = TerminalPane._BLEND_CACHE.get(key)
-        if pair is None:
-            try:
-                f, b = self.bridge.core.blend_cell(
-                    fgc.name(),
-                    bgc.name(),
-                    fg0.name(),
-                    bg0.name(),
-                    self._blend,
-                    painted[0],
-                    painted[1],
-                )
-            except (AttributeError, ValueError):
-                return fgc, bgc  # unknown core: keep the unblended colors
-            pair = (QColor(f), QColor(b))
-            if len(TerminalPane._BLEND_CACHE) > 1000:
-                TerminalPane._BLEND_CACHE.clear()
-            TerminalPane._BLEND_CACHE[key] = pair
-        return pair
-
     def _fmt(self, key, fg0, bg0) -> QTextCharFormat:
-        """Cell format. With Blend on, painted colors (ANSI blocks and
-        truecolor chips from other apps) mix toward the theme's paper/ink;
-        the terminal's own defaults stay exact, so Kilim's reversed cursor
-        cell remains crisp paper-on-ink."""
+        """Cell format: the theme's ink/paper for terminal defaults, and the
+        tool's own colors verbatim for everything it painted."""
         fg, bg, attrs = key
-        painted = [_painted(fg), _painted(bg)]
         fmt = QTextCharFormat()
         fgc, bgc = cell_qcolor(fg, fg0), cell_qcolor(bg, bg0)
         if attrs & (1 << 5):  # reverse: swap the resolved roles
             fgc, bgc = bgc, fgc
-            painted.reverse()
-        if self._blend > 0:
-            fgc, bgc = self._blended(fgc, bgc, fg0, bg0, (painted[0], painted[1]))
         fmt.setForeground(fgc)
         fmt.setBackground(bgc)
         if attrs & (1 << 0):
@@ -1989,18 +1942,6 @@ class KilimWindow(FramelessLaceMainWindow):
                 lambda _c=False, n=name: self.apply_code_theme(n)
             )
             code_group.addAction(act)
-        code_menu.addSeparator()
-        self._blend_action = code_menu.addAction("Blend")
-        self._blend_action.setCheckable(True)
-        self._blend_action.setChecked(self.bridge.core.code_blend())
-        self._blend_action.setToolTip(
-            "Blend color blocks painted by other apps (agents, linters) into\n"
-            "the code theme: backgrounds mix toward its paper, text toward\n"
-            "its ink, with a contrast floor so nothing turns unreadable."
-        )
-        self._blend_action.triggered.connect(
-            lambda checked: self.set_code_blend(checked)
-        )
 
         # Markdown fence theme: Qt preview only (TUI shows markdown source
         # with this theme too, but has no menu — Ctrl+T cycles code only).
@@ -2018,22 +1959,6 @@ class KilimWindow(FramelessLaceMainWindow):
                 lambda _c=False, n=name: self.apply_markdown_theme(n)
             )
             md_group.addAction(act)
-
-    def set_code_blend(self, on: bool):
-        """Themes → Code → Blend: mix tool-painted blocks into the theme.
-
-        The flag lives in the session (persisted to the layout), so the TUI
-        blends the same cells; every terminal repaints in the new colors."""
-        from kilim import blend_weight
-
-        self.bridge.core.set_code_blend(bool(on))
-        weight = blend_weight() if on else 0.0
-        for pane in self.term_panes.values():
-            pane._blend = weight
-            pane._last_sig = None  # force a full repaint in the new colors
-            pane._paint_rows = -1
-        self.save_themes()
-        self._sync_theme_checks()
 
     def apply_code_theme(self, name: str):
         """Session code theme → repaint Qt FilePanes, persist to layout."""
@@ -2101,10 +2026,6 @@ class KilimWindow(FramelessLaceMainWindow):
                     act.setChecked(name == current)
                 except RuntimeError:  # wrapped C++ object deleted
                     pass
-        try:
-            self._blend_action.setChecked(self.bridge.core.code_blend())
-        except (AttributeError, RuntimeError):
-            pass
 
     def save_themes(self):
         """Write code/markdown theme choices back into the layout file."""
@@ -2114,7 +2035,6 @@ class KilimWindow(FramelessLaceMainWindow):
             raw = _json.loads(Path(self.layout_path).read_text(encoding="utf-8"))
             raw.setdefault("layout", {})["theme"] = self.bridge.core.theme()
             raw["layout"]["markdown_theme"] = self.bridge.core.markdown_theme()
-            raw["layout"]["code_blend"] = self.bridge.core.code_blend()
             Path(self.layout_path).write_text(_json.dumps(raw, indent=2), encoding="utf-8")
         except (OSError, ValueError):
             pass
