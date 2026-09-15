@@ -1291,9 +1291,10 @@ class MarkdownPane(QWidget):
 class KilimTitleBar(LaceStandardTitleBar, DockStyled):
     """Lace title bar with the Kilim menu bar embedded in the chrome.
 
-    VS Code-style unified bar: icon, then Views / Terminal / Themes /
-    Window menus, then the window buttons — the shape of Lace's
-    `demo_app_custom_titlebar_menus.MenuEmbeddedTitleBar`. The menu bar
+    VS Code-style unified bar: icon, then Views / Files / Terminal /
+    Themes menus, then the window buttons — the shape of Lace's
+    `demo_app_custom_titlebar_menus.MenuEmbeddedTitleBar`, minus its
+    Window menu (the title-bar buttons already do that job). The menu bar
     is transparent so the bar's own themed background shows through;
     popups pull their colors from the same dock-theme tokens."""
 
@@ -1327,18 +1328,6 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
         self.files_menu = self.menu_bar.addMenu("&Files")
         self.terminal_menu = self.menu_bar.addMenu("&Terminal")
         self.themes_menu = self.menu_bar.addMenu("&Themes")
-
-    def add_window_menu(self):
-        """Add the Window menu (Minimize / Toggle Maximize), as in the demo."""
-        from PySide6.QtGui import QAction
-
-        menu = self.menu_bar.addMenu("&Window")
-        menu.addAction(QAction("Minimize", self, triggered=self.window().showMinimized))
-        # toggle_max_state is Lace's single maximize path — the demo's
-        # showMaximized()/showNormal() pair cannot restore a frameless
-        # window Windows maximized natively (Aero Snap, Win+Up).
-        menu.addAction(QAction("Toggle Maximize", self, triggered=self.toggle_max_state))
-        return menu
 
     def refresh_style(self):
         """Theme the embedded menu bar from the active dock theme."""
@@ -1689,7 +1678,6 @@ class KilimWindow(FramelessLaceMainWindow):
         self._build_files_menu()
         self._term_seq = 0
         self._build_themes_menu()
-        self.titleBar.add_window_menu()
 
     def _build_terminal_menu(self):
         """Terminal menu: new default shell, default picker, all found shells.
