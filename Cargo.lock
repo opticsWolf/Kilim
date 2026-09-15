@@ -403,7 +403,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "binaryornot-rs",
  "encoding_rs",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-py"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "kilim-core",
  "pyo3",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "kilim-tui"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1397,9 +1397,9 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stitch-pty"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bbccdc3a785e9a955cfa351a5a06d6d0b05103a8a2001f29725a63841a2f4ed"
+checksum = "c9b0c96be7bb7c330c6e9eb621f5529d9753ae9c4493172a9908746a3d0b0f87"
 dependencies = [
  "async-trait",
  "bitflags",
@@ -1806,7 +1806,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
