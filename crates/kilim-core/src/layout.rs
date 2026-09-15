@@ -88,8 +88,11 @@ pub struct Pane {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum PaneKind {
-    /// Terminal pane backed by stitch-pty (`spawn_platform`).
+    /// Terminal pane backed by stitch-pty (`spawn_platform`). `cmd` may be
+    /// omitted in the layout: an empty cmd spawns the platform default
+    /// ([`crate::shell::default_shell`]), keeping layouts portable.
     Term {
+        #[serde(default)]
         cmd: String,
         #[serde(default)]
         args: Vec<String>,
@@ -229,6 +232,21 @@ mod tests {
         let doc2 = doc.replace("\"cmd\": \"sh\"", "\"cmd\": \"sh\", \"scrollback\": 42");
         let (_, panes2) = Layout::from_json(&doc2).unwrap();
         assert!(matches!(&panes2[0].kind, PaneKind::Term { scrollback: 42, .. }));
+    }
+
+    #[test]
+    fn term_cmd_defaults_to_platform_shell() {
+        // Portable layouts omit cmd; the pane parses with an empty one,
+        // which TermHandle::spawn resolves to the platform default.
+        let doc = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t"}, "panes": [{"id": "t", "title": "t", "kind": "term"}]}"#;
+        let (_, panes) = Layout::from_json(doc).unwrap();
+        match &panes[0].kind {
+            PaneKind::Term { cmd, rows, cols, .. } => {
+                assert!(cmd.is_empty());
+                assert_eq!((*rows, *cols), (24, 80));
+            }
+            other => panic!("expected a term pane, got {other:?}"),
+        }
     }
 
     #[test]

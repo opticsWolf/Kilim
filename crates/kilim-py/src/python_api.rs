@@ -42,6 +42,52 @@ impl CoreSession {
         self.inner.read().unwrap().layout.pane_ids()
     }
 
+    /// Detect file paths in one terminal row: tuples of
+    /// `(start, end, path, line, col, kind)` with **char** offsets into the
+    /// row (quotes excluded). `kind` is one of `code` / `markdown` /
+    /// `html` (openable viewers) or `binary` / `missing` (not openable —
+    /// binaryornot-rs decides). `line`/`col` come from a `:line[:col]`
+    /// suffix. This is `kilim_core::paths::detect_paths`, shared with the
+    /// TUI.
+    fn detect_paths(
+        &self,
+        line: &str,
+    ) -> Vec<(usize, usize, String, Option<usize>, Option<usize>, String)> {
+        kilim_core::paths::detect_paths(line)
+            .into_iter()
+            .map(|h| (h.start, h.end, h.path, h.line, h.col, h.kind.as_str().to_string()))
+            .collect()
+    }
+
+    /// Viewer kind for one path (binaryornot-rs + extension routing,
+    /// cached): `code` / `markdown` / `html` / `binary` / `missing`.
+    fn classify_file(&self, path: &str) -> String {
+        kilim_core::paths::classify(std::path::Path::new(path))
+            .as_str()
+            .to_string()
+    }
+
+    /// Add a viewer pane to the session (the frontend adds the dock).
+    /// `markdown=true` registers it as a markdown/HTML preview pane.
+    fn insert_file_pane(
+        &self,
+        pane_id: &str,
+        title: &str,
+        path: &str,
+        markdown: bool,
+    ) -> PyResult<()> {
+        self.inner
+            .write()
+            .unwrap()
+            .insert_file_pane(pane_id, title, path, markdown)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// Forget a pane (its dock was closed). True when it was known.
+    fn remove_pane(&self, pane_id: &str) -> bool {
+        self.inner.write().unwrap().remove_pane(pane_id)
+    }
+
     fn theme(&self) -> String {
         self.inner.read().unwrap().theme().to_string()
     }

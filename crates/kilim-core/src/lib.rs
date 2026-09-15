@@ -8,10 +8,13 @@
 pub mod highlight;
 pub mod kilim_themes;
 pub mod layout;
+pub mod paths;
 pub mod session;
+pub mod shell;
 pub mod term;
 
 pub use highlight::{StyledSpan, ThemeRegistry};
 pub use layout::{Dir, Layout, Node, Pane, PaneKind, Tab};
+pub use paths::{FileKind, PathHit};
 pub use session::Session;
 pub use term::TermHandle;

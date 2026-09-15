@@ -28,7 +28,7 @@ def test_capture_apply_roundtrip(tmp_path):
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow("layouts/default.json")
+    w = KilimWindow("layouts/example.json")
     w.show()
     app.processEvents()
     snap = capture(w)
@@ -39,7 +39,7 @@ def test_capture_apply_roundtrip(tmp_path):
     save(sidecar, snap)
     assert load(sidecar)["kilim"]["tab_groups"] == snap["kilim"]["tab_groups"]
 
-    w2 = KilimWindow("layouts/default.json")
+    w2 = KilimWindow("layouts/example.json")
     w2.show()
     app.processEvents()
     assert apply(w2, load(sidecar)) is True
@@ -56,7 +56,7 @@ def test_apply_rejects_diverged_names(tmp_path):
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow("layouts/default.json")
+    w = KilimWindow("layouts/example.json")
     w.show()
     app.processEvents()
     bad = {"version": 1, "kilim": {"tab_groups": [["ghost"]], "active": "ghost"}, "lace": "{}"}

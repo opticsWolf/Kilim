@@ -8,13 +8,13 @@ PySide6 = pytest.importorskip("PySide6.QtWidgets")
 pytest.importorskip("lace")
 
 
-def _window():
+def _window(layout="layouts/default.json"):
     from PySide6.QtWidgets import QApplication
 
     from kilim.qt_app import KilimWindow
 
     app = QApplication.instance() or QApplication([])
-    w = KilimWindow("layouts/default.json")
+    w = KilimWindow(layout)
     w.show()
     return app, w
 
@@ -228,7 +228,7 @@ def test_markdown_renders_pure_rust():
     from kilim.qt_app import Bridge, MarkdownPane
 
     app = QApplication.instance() or QApplication([])
-    doc = open("layouts/default.json", encoding="utf-8").read()
+    doc = open("layouts/example.json", encoding="utf-8").read()
     bridge = Bridge(doc)
     try:
         assert hasattr(bridge.core, "markdown_page")
@@ -270,17 +270,14 @@ def test_active_term_autofocused(tmp_path):
 
 
 def test_terminal_menu_launches_shell():
-    """Terminal menu: detected shells launch into new left docks."""
+    """Terminal menu: discovered shells launch into new left docks."""
     app, w = _window()
     try:
         shells = w._shell_options()
         assert shells, "expected at least one shell on this machine"
-        names = [n for n, _, _ in shells]
-        assert "Command Prompt" in names
-        cmd = next(c for n, c, _ in shells if n == "Command Prompt")
-        args = next(a for n, _, a in shells if n == "Command Prompt")
+        label, cmd, args = shells[0]
         before = set(w.pane_docks)
-        w.launch_shell("Command Prompt", cmd, args)
+        w.launch_shell(label, cmd, args)
         new = set(w.pane_docks) - before
         assert len(new) == 1
         pid = new.pop()
@@ -290,15 +287,17 @@ def test_terminal_menu_launches_shell():
         app.processEvents()
 
 
-def test_themes_menu_switches_and_repaints():
+def test_themes_menu_switches_and_repaints(tmp_path):
     """Themes menu: code/md/lace actions apply, repaint, and persist."""
     import json
+    import shutil
 
     from PySide6.QtWidgets import QApplication
 
-    layout_file = "layouts/default.json"
-    before = open(layout_file, encoding="utf-8").read()
-    app, w = _window()
+    # Hermetic copy: parallel workers must not race on the repo's layout.
+    layout_file = tmp_path / "l.json"
+    shutil.copy("layouts/default.json", layout_file)
+    app, w = _window(str(layout_file))
     try:
         menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
         assert "&Themes" in menus, sorted(menus)
@@ -314,7 +313,7 @@ def test_themes_menu_switches_and_repaints():
         assert w.bridge.core.theme() == "Kilim Warm"
         md_actions["Kilim Midnight Neo"].trigger()
         assert w.bridge.core.markdown_theme() == "Kilim Midnight Neo"
-        raw = json.loads(open("layouts/default.json", encoding="utf-8").read())
+        raw = json.loads(layout_file.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Warm"
         assert raw["layout"]["markdown_theme"] == "Kilim Midnight Neo"
         # Lace menu is Kilim-only and flat: 10 actions, no stock presets.
@@ -326,7 +325,6 @@ def test_themes_menu_switches_and_repaints():
         next(a for a in lace_acts if a.text() == "Kilim Light").trigger()
         assert w.lace_theme == "kilim_light", "lace choice not recorded"
     finally:
-        open(layout_file, "w", encoding="utf-8").write(before)
         w.close()
         app.processEvents()
 
@@ -399,7 +397,7 @@ def test_reset_layout_restores_the_file_arrangement(tmp_path):
     app = QApplication.instance() or QApplication([])
     layout = tmp_path / "default.json"
     sidecar = tmp_path / "default.perspective.json"
-    shutil.copy("layouts/default.json", layout)
+    shutil.copy("layouts/example.json", layout)
 
     w = KilimWindow(str(layout), str(sidecar))  # no sidecar: file arrangement
     w.show()
@@ -793,7 +791,7 @@ def test_lace_switch_defers_markdown_refresh():
 
     from PySide6.QtCore import QTimer
 
-    app, w = _window()
+    app, w = _window("layouts/example.json")
     try:
         calls = []
         real = QTimer.singleShot
@@ -805,7 +803,7 @@ def test_lace_switch_defers_markdown_refresh():
         with patch("kilim.qt_app.QTimer.singleShot", side_effect=rec):
             w.apply_lace_theme("kilim_warm")
         app.processEvents()
-        assert w.md_panes, "default layout must have a markdown pane"
+        assert w.md_panes, "the example layout must have a markdown pane"
         for pane in w.md_panes.values():
             assert any(
                 len(a) == 2 and a[0] == 0

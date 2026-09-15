@@ -39,6 +39,13 @@ ANSI = {
 }
 
 
+def _same_path(a: str, b: str) -> bool:
+    """Case-insensitive path compare (Windows): open/history dedupe."""
+    import os
+
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 def cell_qcolor(s: str, default: QColor) -> QColor:
     t = (s or "").strip().lower()
     if not t or t == "default":
@@ -315,6 +322,9 @@ class _TermView(QPlainTextEdit):
         self.setFont(QFont("Cascadia Mono", 10))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.viewport().setMouseTracking(True)  # links need hover, always
+        self._press_pos = None  # click-vs-drag bookkeeping for links
+        self._press_link = None
 
     def keyPressEvent(self, e):
         self._owner.on_key(e)
@@ -331,20 +341,39 @@ class _TermView(QPlainTextEdit):
         self._owner.on_wheel(e)
 
     def mousePressEvent(self, e):
+        self._press_pos = e.position().toPoint()
+        self._press_link = None
         if self._owner._send_mouse("press", e):
             return  # app owns the mouse (tracking mode): no selection
+        if e.button() == Qt.LeftButton:
+            self._press_link = self._owner._link_at(self._press_pos)
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
         if self._owner._send_mouse("move", e):
             return
+        if QApplication.mouseButtons() == Qt.NoButton:
+            hit = self._owner._link_at(e.position().toPoint())
+            self.viewport().setCursor(Qt.PointingHandCursor if hit else Qt.IBeamCursor)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._owner._mouse_active():
             self._owner._send_mouse("release", e)
             return
+        pos = e.position().toPoint()
+        hit = self._press_link
+        clicked = (
+            hit is not None
+            and e.button() == Qt.LeftButton
+            and self._press_pos is not None
+            and (pos - self._press_pos).manhattanLength() <= 4
+        )
+        self._press_pos = self._press_link = None
         super().mouseReleaseEvent(e)
+        if clicked:
+            self._owner.open_link(hit)  # a click on a path opens it
+            return
         self._owner._capture_selection()  # persist drag, anchored to history
 
     def contextMenuEvent(self, e):
@@ -390,6 +419,8 @@ class TerminalPane(QWidget):
         self._seen_total = None  # activity-badge baseline
         self._set_badge = lambda on: None  # wired by the window (tab dot)
         self._wheel_accum = 0  # fractional scroll accumulation (smooth pads)
+        self._link_cache: dict[str, list] = {}  # row text -> openable hits
+        self._open_path = lambda *_: None  # wired by the window
         self._poller = QTimer(self)
         self._poller.timeout.connect(self._poll)
         self._poller.start(60)
@@ -521,7 +552,6 @@ class TerminalPane(QWidget):
         self._cursor_to(snap["cursor"], snap["start"], snap["rows"])
         self._reapply_selection()
         self._badges(snap)
-        self.view.viewport().setMouseTracking(self._modes.get("mouse") == 1003)
     def _paint(self, snap):
         """Full rebuild or dirty-subset repaint (stitch-pty dirty rows).
 
@@ -545,6 +575,73 @@ class TerminalPane(QWidget):
             self._paint_rows = snap["rows"]
             self._paint_start = snap["start"]
 
+    @staticmethod
+    def _row_text(row) -> str:
+        """The row as painted: hidden cells show a space (links index this)."""
+        return "".join(t if not (a & (1 << 6)) else " " for t, _, _, a in row)
+
+    def _links_for_text(self, text: str) -> list:
+        """Openable paths in one row text, cached per text.
+
+        Rows repaint constantly; detection runs in Rust
+        (`CoreSession.detect_paths`, shared with the TUI) and only
+        `code`/`markdown`/`html` kinds are links — binary and missing
+        paths get no underline and no click."""
+        hits = self._link_cache.get(text)
+        if hits is None:
+            try:
+                hits = [
+                    h
+                    for h in self.bridge.core.detect_paths(text)
+                    if h[5] in ("code", "markdown", "html")
+                ]
+            except (AttributeError, ValueError):
+                hits = []
+            if len(self._link_cache) > 400:
+                self._link_cache.clear()
+            self._link_cache[text] = hits
+        return hits
+
+    def _link_cells(self, row):
+        """Cell indices under a link (None when the row has none)."""
+        hits = self._links_for_text(self._row_text(row))
+        if not hits:
+            return None
+        out: list[int] = []
+        pos = 0
+        for ci, (text, _, _, attrs) in enumerate(row):
+            n = 1 if attrs & (1 << 6) else len(text)
+            if any(s < pos + n and pos < e for s, e, *_ in hits):
+                out.append(ci)
+            pos += n
+        return out
+
+    def _link_at(self, pos):
+        """Link hit under a viewport position, or None (hover + click)."""
+        cur = self.view.cursorForPosition(pos)
+        block = cur.block()
+        if not block.isValid():
+            return None
+        hits = self._links_for_text(block.text())
+        if not hits:
+            return None
+        ci = cur.position() - block.position()
+        doc = self.view.document()
+        for hit in hits:
+            start, end = hit[0], hit[1]
+            if not (start <= ci <= end):
+                continue
+            a, b = QTextCursor(doc), QTextCursor(doc)
+            a.setPosition(block.position() + start)
+            b.setPosition(block.position() + end)
+            if self.view.cursorRect(a).left() <= pos.x() <= self.view.cursorRect(b).left():
+                return hit
+        return None
+
+    def open_link(self, hit):
+        """A clicked path: hand it to the window's viewer router."""
+        self._open_path(hit[2], hit[3], hit[5])
+
     def _paint_full(self, rows, fg0, bg0, caret=None):
         """Wipe + rebuild (first paint, resize, theme switch)."""
         self._render_count += 1
@@ -553,7 +650,14 @@ class TerminalPane(QWidget):
         cur.beginEditBlock()  # one layout pass for the whole rebuild
         try:
             for i, row in enumerate(rows):
-                self._insert_runs(cur, row, fg0, bg0, caret[1] if caret and caret[0] == i else None)
+                self._insert_runs(
+                    cur,
+                    row,
+                    fg0,
+                    bg0,
+                    caret[1] if caret and caret[0] == i else None,
+                    self._link_cells(row),
+                )
                 cur.insertBlock()
         finally:
             cur.endEditBlock()
@@ -578,20 +682,30 @@ class TerminalPane(QWidget):
                     continue
                 cur.setPosition(block.position())
                 cur.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-                self._insert_runs(cur, rows[i], fg0, bg0, caret[1] if caret and caret[0] == i else None)
+                self._insert_runs(
+                    cur,
+                    rows[i],
+                    fg0,
+                    bg0,
+                    caret[1] if caret and caret[0] == i else None,
+                    self._link_cells(rows[i]),
+                )
                 touched = True
         finally:
             cur.endEditBlock()
         if touched and count:
             self._render_count += 1
 
-    def _insert_runs(self, cur, row, fg0, bg0, caret_col=None):
+    def _insert_runs(self, cur, row, fg0, bg0, caret_col=None, links=None):
         """Insert one viewport row, merging adjacent same-style cells.
 
-        The cell at `caret_col` is reverse-video (TUI soft-cursor parity)."""
+        `caret_col` reverses the block cursor cell (TUI soft-cursor
+        parity); `links` underlines clickable path cells."""
         run_text: list[str] = []
         run_key = None
         for ci, (text, fg, bg, attrs) in enumerate(row):
+            if links and ci in links:
+                attrs |= 1 << 3  # underline
             key = (fg, bg, attrs)
             if caret_col is not None and ci == caret_col:
                 key = (bg, fg, attrs ^ (1 << 5))
@@ -958,9 +1072,17 @@ class FilePane(QPlainTextEdit):
         super().__init__()
         self.bridge = bridge
         self.pane_id = pane_id
+        self.path: str | None = None  # click-opened files know their path
         self.setReadOnly(True)
         self.setFont(QFont("Cascadia Mono", 10))
         self.refresh()
+
+    def goto_line(self, line: int) -> None:
+        """Scroll a `path:line` hit to its line (1-based, clamped)."""
+        block = self.document().findBlockByNumber(max(0, line - 1))
+        if block.isValid():
+            self.setTextCursor(QTextCursor(block))
+            self.centerCursor()
 
     def refresh(self):
         from PySide6.QtGui import QPalette, QTextBlockFormat
@@ -1067,14 +1189,21 @@ class MarkdownPane(QWidget):
     + KaTeX shell). WebEngine when present, else rich text; highlighted
     source only if the fragment itself fails. No wheel involved."""
 
-    def __init__(self, bridge: Bridge, pane_id: str, path: str | None = None):
+    def __init__(self, bridge: Bridge, pane_id: str, path: str | None = None, html_file: str | None = None):
         super().__init__()
         self.bridge = bridge
         self.pane_id = pane_id
         self.path = path
+        self.html_file = html_file  # set: render the file itself, not markdown
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._build_view())
+
+    def set_source(self, path: str, html_file: str | None = None) -> None:
+        """Retarget this pane (reopen from history / open another html)."""
+        self.path = path
+        self.html_file = html_file
+        self.refresh()
 
     def refresh(self):
         """Re-render with the current markdown theme (menu switching)."""
@@ -1084,7 +1213,14 @@ class MarkdownPane(QWidget):
             old.deleteLater()
         lay.addWidget(self._build_view())
 
-    def _build_view(self):
+    def _page(self) -> str | None:
+        """HTML for this pane: the raw file for html, else mordant."""
+        if self.html_file:
+            try:
+                text = Path(self.html_file).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+            return self._style_page(text)
         try:
             page = self.bridge.core.markdown_page(self.pane_id)
         except (AttributeError, ValueError):
@@ -1095,8 +1231,12 @@ class MarkdownPane(QWidget):
                 page = f"<html><body>{frag}</body></html>" if frag else None
             except (AttributeError, ValueError):
                 page = None
+        return page
+
+    def _build_view(self):
+        page = self._page()
         view = self._make_view(page)
-        if view is None:  # last resort: highlighted source as text
+        if view is None and not self.html_file:  # last resort: source as text
             fb = QPlainTextEdit()
             fb.setReadOnly(True)
             fb.setFont(QFont("Cascadia Mono", 10))
@@ -1172,6 +1312,7 @@ class KilimTitleBar(LaceStandardTitleBar, DockStyled):
         The bar owns its menus (demo pattern), so callers never fish them
         out of `menu_bar.actions()` by position."""
         self.views_menu = self.menu_bar.addMenu("&Views")
+        self.files_menu = self.menu_bar.addMenu("&Files")
         self.terminal_menu = self.menu_bar.addMenu("&Terminal")
         self.themes_menu = self.menu_bar.addMenu("&Themes")
 
@@ -1334,6 +1475,10 @@ class KilimWindow(FramelessLaceMainWindow):
         self.lace_theme: str | None = None
         self._kilim_by_lace = register_kilim_lace_themes()
         self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "code": {}, "md": {}}
+        self.file_history: list[str] = []  # viewer files, newest first
+        self.default_shell: tuple[str, str, list[str]] | None = None
+        self._viewer_seq = 0  # unique ids for click-opened viewer docks
+        self._viewer_anchor = None  # newest viewer dock (tabify target)
 
         import json
 
@@ -1358,16 +1503,20 @@ class KilimWindow(FramelessLaceMainWindow):
                     inner = MarkdownPane(self.bridge, pid, p.get("path"))
                 else:
                     inner = FilePane(self.bridge, pid)
+                    inner.path = p.get("path")
                 dock = DockWidget(p.get("title", pid))
                 dock.setObjectName(pid)  # pane ids = dock names (round-trip key)
                 dock.set_widget(inner)
                 if kind == "term":
                     self.term_panes[pid] = inner
                     inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
+                    inner._open_path = self.open_in_viewer
                 elif kind == "markdown":
                     self.md_panes[pid] = inner
+                    dock.closed.connect(lambda pid=pid: self._dispose_viewer(pid))
                 else:
                     self.file_panes[pid] = inner
+                    dock.closed.connect(lambda pid=pid: self._dispose_viewer(pid))
                 area = DockWidgetArea.left if kind == "term" else DockWidgetArea.right
                 if area_widget is None:
                     area_widget = self.manager.add_dock_widget(area, dock)
@@ -1388,15 +1537,22 @@ class KilimWindow(FramelessLaceMainWindow):
         data = perspectives.load(sidecar)
         if data is not None:
             perspectives.apply(self, data)
-        # Lace chrome theme rides in the sidecar (not the shared layout).
-        try:
-            import json as _json
+        # Session extras ride in the sidecar (not the shared layout): the
+        # Lace chrome theme, the chosen default terminal, recent files.
+        saved = self._sidecar()
+        if saved.get("lace_theme"):
+            self.apply_lace_theme(saved["lace_theme"], persist=False)
+        from kilim import shells
 
-            saved = _json.loads(Path(sidecar).read_text(encoding="utf-8"))
-            if isinstance(saved, dict) and saved.get("lace_theme"):
-                self.apply_lace_theme(saved["lace_theme"], persist=False)
-        except (OSError, ValueError):
-            pass
+        if saved.get("default_shell"):
+            entry = shells.find_shell(str(saved["default_shell"]))
+            if entry is not None:
+                self.default_shell = entry
+        if self.default_shell is None:
+            self.default_shell = shells.default_entry()
+        history = saved.get("file_history")
+        if isinstance(history, list):
+            self.file_history = [p for p in history if isinstance(p, str)]
         if self.lace_theme is None and "kilim_midnight" in self._kilim_by_lace:
             self.apply_lace_theme("kilim_midnight")  # fresh launch opens unified
         self._build_menus()
@@ -1517,19 +1673,254 @@ class KilimWindow(FramelessLaceMainWindow):
         show_all.triggered.connect(self.restore_all_panes)
         reset = views.addAction("Reset Layout")
         reset.triggered.connect(self.reset_layout)
-        terminal = self.titleBar.terminal_menu
-        shells = self._shell_options()
-        if not shells:
-            none = terminal.addAction("No shells found")
-            none.setEnabled(False)
-        for name, cmd, args in shells:
-            act = terminal.addAction(name)
-            act.triggered.connect(
-                lambda _checked=False, n=name, c=cmd, a=args: self.launch_shell(n, c, a)
-            )
+        self._build_terminal_menu()
+        self._build_files_menu()
         self._term_seq = 0
         self._build_themes_menu()
         self.titleBar.add_window_menu()
+
+    def _build_terminal_menu(self):
+        """Terminal menu: new default shell, default picker, all found shells.
+
+        Only shells discovered on this machine are listed (cross-platform
+        `kilim.shells`); the default is remembered in the sidecar and the
+        `New <label>` action spawns exactly it."""
+        from PySide6.QtGui import QActionGroup
+
+        from kilim import shells
+
+        menu = self.titleBar.terminal_menu
+        menu.clear()
+        entries = shells.find_shells()
+        default = self.default_shell or shells.default_entry()
+        if default is not None:
+            label, cmd, args = default
+            act = menu.addAction(f"New {label}")
+            act.triggered.connect(
+                lambda _c=False, n=label, c=cmd, a=args: self.launch_shell(n, c, a)
+            )
+            menu.addSeparator()
+        pick = menu.addMenu("Default Terminal")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for label, _cmd, _args in entries:
+            act = pick.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(default is not None and label == default[0])
+            act.triggered.connect(
+                lambda _c=False, l=label: self.set_default_shell(l)
+            )
+            group.addAction(act)
+        if not entries:
+            none = pick.addAction("No shells found")
+            none.setEnabled(False)
+        menu.addSeparator()
+        for label, cmd, args in entries:
+            act = menu.addAction(label)
+            act.triggered.connect(
+                lambda _c=False, n=label, c=cmd, a=args: self.launch_shell(n, c, a)
+            )
+
+    def set_default_shell(self, label: str) -> None:
+        """Pick the shell `New <label>` spawns; remembered across launches."""
+        from kilim import shells
+
+        entry = shells.find_shell(label)
+        if entry is None:
+            return
+        self.default_shell = entry
+        self._save_sidecar(default_shell=label)
+        self._build_terminal_menu()
+
+    def _build_files_menu(self):
+        """Files menu: reopen recently opened viewer files (newest first).
+
+        Closing a viewer drops its dock; the history is what brings files
+        back, so an unbounded pile of docks never accumulates."""
+        menu = self.titleBar.files_menu
+        menu.clear()
+        menu.setToolTipsVisible(True)
+        if not self.file_history:
+            empty = menu.addAction("No Files Yet")
+            empty.setEnabled(False)
+            return
+        for path in self.file_history:
+            act = menu.addAction(Path(path).name or path)
+            act.setToolTip(path)
+            act.triggered.connect(
+                lambda _c=False, p=path: self.open_history_file(p)
+            )
+        menu.addSeparator()
+        clear = menu.addAction("Clear History")
+        clear.triggered.connect(self.clear_history)
+
+    def open_history_file(self, path: str):
+        """Reopen a history entry (dropped when the file is gone)."""
+        if not Path(path).is_file():
+            self._forget_file(path)
+            return
+        try:
+            kind = self.bridge.core.classify_file(path)
+        except (AttributeError, ValueError):
+            kind = "missing"
+        if kind in ("binary", "missing"):
+            self._forget_file(path)
+            return
+        self.open_in_viewer(path, None, kind)
+
+    def clear_history(self):
+        self.file_history.clear()
+        self._build_files_menu()
+        self._save_sidecar(file_history=[])
+
+    def _remember_file(self, path: str):
+        """Newest first, deduped (case-insensitive paths), capped."""
+        self.file_history = [p for p in self.file_history if not _same_path(p, path)]
+        self.file_history.insert(0, path)
+        del self.file_history[20:]
+        self._build_files_menu()
+        self._save_sidecar(file_history=self.file_history)
+
+    def _forget_file(self, path: str):
+        before = len(self.file_history)
+        self.file_history = [p for p in self.file_history if not _same_path(p, path)]
+        if len(self.file_history) != before:
+            self._build_files_menu()
+            self._save_sidecar(file_history=self.file_history)
+
+    def open_in_viewer(self, path: str, line: int | None = None, kind: str | None = None):
+        """Open a clicked terminal path in a fresh viewer dock.
+
+        `kind` comes from the Rust detector: markdown/html get the web
+        pane (raw file for html, mordant render for markdown), everything
+        else the syntect text viewer. Binary/missing never get here —
+        those paths are not links. A file that is already open is raised
+        instead of duplicated."""
+        if not kind:
+            try:
+                kind = self.bridge.core.classify_file(path)
+            except (AttributeError, ValueError):
+                kind = "missing"
+        if kind in ("binary", "missing"):
+            return
+        open_here = self._viewer_with_path(path)
+        if open_here is not None:
+            self._raise_viewer(open_here)
+            return
+        dock = self._add_viewer(path, kind, line)
+        self._remember_file(path)
+        self._raise_viewer(dock)
+
+    def _viewer_with_path(self, path: str):
+        """Dock of an already-open viewer for `path`, or None."""
+        for pid, pane in list(self.file_panes.items()) + list(self.md_panes.items()):
+            if getattr(pane, "path", None) and _same_path(pane.path, path):
+                return self.pane_docks.get(pid)
+        return None
+
+    def _add_viewer(self, path: str, kind: str, line: int | None = None):
+        """Create the session pane + dock for one viewer file."""
+        from lace import DockWidget
+        from lace.enums import DockWidgetArea
+
+        self._viewer_seq += 1
+        pid = f"view{self._viewer_seq}"
+        while pid in self.pane_docks:
+            self._viewer_seq += 1
+            pid = f"view{self._viewer_seq}"
+        title = Path(path).name or path
+        self.bridge.core.insert_file_pane(
+            pid, title, path, kind in ("markdown", "html")
+        )
+        if kind == "code":
+            inner = FilePane(self.bridge, pid)
+            inner.path = path
+            self.file_panes[pid] = inner
+            if line:
+                inner.goto_line(line)
+        else:
+            inner = MarkdownPane(
+                self.bridge, pid, path, html_file=path if kind == "html" else None
+            )
+            self.md_panes[pid] = inner
+        dock = DockWidget(title)
+        dock.setObjectName(pid)
+        dock.set_widget(inner)
+        target = self._viewer_anchor if self._viewer_alive() else None
+        if target is not None:
+            # Tabify under the open viewer group (center + target).
+            self.manager.add_dock_widget(DockWidgetArea.center, dock, target)
+        else:
+            self.manager.add_dock_widget(DockWidgetArea.right, dock)
+        self._viewer_anchor = dock
+        self.pane_docks[pid] = dock
+        dock.closed.connect(lambda pid=pid: self._dispose_viewer(pid))
+        views = self.titleBar.views_menu
+        views.insertAction(views.actions()[0], dock.toggle_view_action())
+        return dock
+
+    def _viewer_alive(self) -> bool:
+        """The tabify anchor still exists (never touch a deleted dock)."""
+        try:
+            return self._viewer_anchor is not None and bool(self._viewer_anchor.objectName())
+        except RuntimeError:
+            return False
+
+    def _raise_viewer(self, dock) -> None:
+        """Show + focus a viewer dock. Lace's own show path raises the tab
+        (`set_current_dock_widget`), so `toggle_view(True)` is enough."""
+        try:
+            dock.toggle_view(True)
+            pid = self.pane_of(dock)
+            pane = self.file_panes.get(pid) or self.md_panes.get(pid)
+            if pane is not None:
+                self._focus_viewer(pane)
+        except RuntimeError:
+            pass  # closing
+
+    def _focus_viewer(self, pane) -> None:
+        """Focus the pane's inner widget (web view / text view)."""
+        if isinstance(pane, MarkdownPane):
+            lay = pane.layout()
+            if lay is not None and lay.count():
+                w = lay.itemAt(0).widget()
+                if w is not None:
+                    w.setFocus()
+            return
+        pane.setFocus()
+
+    def _dispose_viewer(self, pid: str) -> None:
+        """A viewer dock closed: drop widget + session pane (history keeps
+        the path, so reopening is one click)."""
+        pane = self.file_panes.pop(pid, None)
+        if pane is None:
+            pane = self.md_panes.pop(pid, None)
+        if pane is None:
+            return  # not a viewer (terminals stay restorable)
+        dock = self.pane_docks.pop(pid, None)
+        if self._viewer_anchor is dock:  # tabify target: another open viewer
+            self._viewer_anchor = next(
+                (
+                    d
+                    for other, d in self.pane_docks.items()
+                    if other in self.file_panes or other in self.md_panes
+                ),
+                None,
+            )
+        if dock is not None:
+            act = dock.toggle_view_action()
+            views = self.titleBar.views_menu
+            try:
+                if act in views.actions():
+                    views.removeAction(act)
+            except RuntimeError:
+                pass
+        try:
+            self.bridge.core.remove_pane(pid)
+        except (AttributeError, ValueError):
+            pass
+        pane.setParent(None)
+        pane.deleteLater()
 
     def _build_themes_menu(self):
         """Themes menu: Lace chrome, code (Qt + TUI), markdown fences.
@@ -1677,47 +2068,37 @@ class KilimWindow(FramelessLaceMainWindow):
         except (OSError, ValueError):
             pass
 
-    def save_lace_theme(self):
-        """Stash the Lace chrome choice in the perspective sidecar."""
+    def _sidecar(self) -> dict:
+        """Sidecar JSON as a dict (session extras live beside the Lace blob)."""
         import json as _json
 
         try:
-            try:
-                raw = _json.loads(Path(self.perspective_path).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                raw = {}
-            raw["lace_theme"] = self.lace_theme
+            raw = _json.loads(Path(self.perspective_path).read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_sidecar(self, **extra) -> None:
+        """Read-modify-write the sidecar: `perspectives.save` drops extras."""
+        import json as _json
+
+        raw = self._sidecar()
+        raw.update(extra)
+        try:
             Path(self.perspective_path).write_text(_json.dumps(raw, indent=2), encoding="utf-8")
         except OSError:
             pass
 
+    def save_lace_theme(self):
+        """Stash the Lace chrome choice in the perspective sidecar."""
+        self._save_sidecar(lace_theme=self.lace_theme)
+
     @staticmethod
     def _shell_options() -> list[tuple[str, str, list[str]]]:
-        """Launchable shells, skipping what isn't installed."""
-        import os
-        import shutil
+        """Launchable shells for this machine (cross-platform discovery)."""
+        from kilim import shells
 
-        found: list[tuple[str, str, list[str]]] = []
-        ps = shutil.which("powershell.exe") or shutil.which("powershell")
-        if ps:
-            found.append(("PowerShell", ps, []))
-        bash = (
-            shutil.which("bash.exe")
-            or shutil.which("bash")
-            or next(
-                (p for p in (
-                    "C:/Program Files/Git/bin/bash.exe",
-                    "C:/Program Files (x86)/Git/bin/bash.exe",
-                ) if Path(p).is_file()),
-                None,
-            )
-        )
-        if bash:
-            found.append(("Git Bash", bash, ["--login", "-i"]))
-        cmd = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or shutil.which("cmd")
-        if cmd and Path(cmd).is_file():
-            found.append(("Command Prompt", cmd, []))
-        return found
+        return shells.find_shells()
 
     def launch_shell(self, name: str, cmd: str, args: list[str]):
         """Spawn a new shell pane (core) and dock it left."""
@@ -1740,6 +2121,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self.pane_docks[pid] = dock
         self.term_panes[pid] = inner
         inner._set_badge = lambda on, pid=pid: self._badge_pane(pid, on)
+        inner._open_path = self.open_in_viewer
         views = self.titleBar.views_menu
         views.insertAction(views.actions()[0], dock.toggle_view_action())
         inner.view.setFocus()
@@ -1786,10 +2168,15 @@ class KilimWindow(FramelessLaceMainWindow):
             perspectives.apply(self, data)
 
     def _persist_perspective(self):
-        """Write the current arrangement (+ lace theme) to the sidecar."""
+        """Write the current arrangement + session extras to the sidecar."""
         perspectives.save(self.perspective_path, perspectives.capture(self))
-        if self.lace_theme:  # save() rewrites the sidecar: re-stash.
-            self.save_lace_theme()
+        # save() rewrites the sidecar: re-stash the keys it doesn't know.
+        extras = {"file_history": self.file_history}
+        if self.lace_theme:
+            extras["lace_theme"] = self.lace_theme
+        if self.default_shell:
+            extras["default_shell"] = self.default_shell[0]
+        self._save_sidecar(**extras)
 
     def pane_of(self, dock) -> str:
         name = dock.objectName()

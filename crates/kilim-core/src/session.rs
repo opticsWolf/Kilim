@@ -115,35 +115,64 @@ impl Session {
         cols: u16,
         scrollback: usize,
     ) -> Result<(String, Vec<String>), String> {
-        if self.panes.contains_key(pane_id) {
-            return Err(format!("pane '{pane_id}' already exists"));
-        }
-        self.panes.insert(
-            pane_id.to_string(),
-            Pane {
-                id: pane_id.to_string(),
-                title: title.to_string(),
-                kind: PaneKind::Term {
-                    cmd: cmd.to_string(),
-                    args: args.to_vec(),
-                    rows,
-                    cols,
-                    scrollback,
-                },
+        self.splice_pane(Pane {
+            id: pane_id.to_string(),
+            title: title.to_string(),
+            kind: PaneKind::Term {
+                cmd: cmd.to_string(),
+                args: args.to_vec(),
+                rows,
+                cols,
+                scrollback,
             },
-        );
-        let old = std::mem::replace(
-            &mut self.layout.root,
-            Node::Pane { pane_id: pane_id.to_string() },
-        );
+        })?;
+        Ok((cmd.to_string(), args.to_vec()))
+    }
+
+    /// Add a viewer pane (clicked-path docks): `markdown=false` for the
+    /// syntect file viewer, `true` for markdown/HTML preview panes.
+    pub fn insert_file_pane(
+        &mut self,
+        pane_id: &str,
+        title: &str,
+        path: &str,
+        markdown: bool,
+    ) -> Result<(), String> {
+        let kind = if markdown {
+            PaneKind::Markdown { path: path.to_string() }
+        } else {
+            PaneKind::File { path: path.to_string() }
+        };
+        self.splice_pane(Pane { id: pane_id.to_string(), title: title.to_string(), kind })
+    }
+
+    /// Forget a pane (a frontend disposed its dock). Returns false when the
+    /// id was already gone. The layout tree keeps its slot: frontends
+    /// rebuild trees from the layout file, and only the Qt app disposes
+    /// docks live (the TUI has no pane closing yet).
+    pub fn remove_pane(&mut self, pane_id: &str) -> bool {
+        self.terms.remove(pane_id);
+        self.panes.remove(pane_id).is_some()
+    }
+
+    /// Insert `pane` into the inventory and splice a pane node beside the
+    /// root, focusing it. Both frontends pick it up live (the TUI renders
+    /// the tree every frame; Qt adds a dock).
+    fn splice_pane(&mut self, pane: Pane) -> Result<(), String> {
+        if self.panes.contains_key(&pane.id) {
+            return Err(format!("pane '{}' already exists", pane.id));
+        }
+        let id = pane.id.clone();
+        self.panes.insert(id.clone(), pane);
+        let old = std::mem::replace(&mut self.layout.root, Node::Pane { pane_id: id.clone() });
         self.layout.root = Node::Split {
             dir: Dir::Horizontal,
             ratio: 0.7,
             a: Box::new(old),
-            b: Box::new(Node::Pane { pane_id: pane_id.to_string() }),
+            b: Box::new(Node::Pane { pane_id: id.clone() }),
         };
-        self.layout.active = pane_id.to_string();
-        Ok((cmd.to_string(), args.to_vec()))
+        self.layout.active = id;
+        Ok(())
     }
 
     pub async fn write_term(&self, pane_id: &str, data: &[u8]) -> Result<usize, String> {

@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.3.0: clickable terminal paths — a Rust detector in kilim-core (char offsets, `:line:col`, quotes, `~`/`file://`/Git-Bash roots) classifies hits with binaryornot-rs; the Qt surface underlines text paths and opens each click in a fresh viewer dock (code / markdown / html), closed docks dispose their pane, and a Files menu keeps the last 20 for one-click reopening. The Terminal menu gains a sidecar-persisted default-shell picker over the shells actually installed (cross-platform discovery), `New <default>` spawns it, and the shipped default layout is a single terminal pane with no pinned cmd (empty cmd = platform default, so layouts stay portable)
 - v0.2.2: the Qt terminal block cursor is focus-gated — it appears when the pane's view has the focus, clears on blur, and the blink clock only runs while focused.
 - v0.2.1: Qt terminal block cursor — a read-only QPlainTextEdit draws no caret, so the Qt frontend now bakes a reverse-video block into the cell under the terminal cursor (TUI soft-cursor parity), blinking on the system caret clock; it follows moves without dirty rows and its blink frames count as overlay, not content, repaints.
 - v0.2.0: version cut — the theme system rework (base theme + functional token palettes) and the demo-parity frameless Qt chrome rounded up into the 0.2 line; no code changes over v0.1.71.

@@ -145,3 +145,63 @@ def test_fusion_scrollbar_css_sampled():
     assert "<style>" + css + "</style>" in out
     assert out.index("<style>") < out.index("</head>")
     assert MarkdownPane._style_page("<body>bare</body>").startswith("<style>")
+
+
+def test_detect_paths_and_classify(session, tmp_path, monkeypatch):
+    """Rust detector exposed to Python: char offsets, kinds, :line:col."""
+    src = tmp_path / "m.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    blob = tmp_path / "b.bin"
+    blob.write_bytes(b"\x00\x01\x02\x00\xff\xfe")
+    md = tmp_path / "n.md"
+    md.write_text("# n\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    line = f"see {src}:12:3 and {blob} and n.md and missing.txt now"
+    hits = session.detect_paths(line)
+    assert [(line[h[0]:h[1]], h[5]) for h in hits] == [
+        (str(src), "code"),
+        (str(blob), "binary"),
+        ("n.md", "markdown"),
+        ("missing.txt", "missing"),
+    ]
+    code = next(h for h in hits if h[5] == "code")
+    assert code[3] == 12 and code[4] == 3  # :line:col parsed off the path
+    assert session.classify_file(str(src)) == "code"
+    assert session.classify_file(str(blob)) == "binary"
+    assert session.classify_file(str(tmp_path / "nope.txt")) == "missing"
+
+
+def test_pane_inventory_add_and_remove(session, tmp_path):
+    """Viewer panes are added and forgotten (a closed dock disposes one)."""
+    src = tmp_path / "v.txt"
+    src.write_text("hi\n", encoding="utf-8")
+    session.insert_file_pane("view1", "v.txt", str(src), False)
+    assert "view1" in session.pane_ids()
+    assert session.highlighted_file("view1")[0][0][0].startswith("hi")
+    assert session.remove_pane("view1") is True
+    assert session.remove_pane("view1") is False
+    with pytest.raises(ValueError):
+        session.highlighted_file("view1")
+
+
+def test_empty_cmd_spawns_platform_default():
+    """Portable layouts omit cmd; an empty cmd resolves to the OS default."""
+    import asyncio
+
+    doc = json.dumps(
+        {
+            "layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t"},
+            "panes": [{"id": "t", "title": "t", "kind": "term"}],
+        }
+    )
+    core = CoreSession(doc)
+
+    async def go():
+        await core.spawn_term("term-def", "default", "", [], 24, 80, 2000)
+        return core.term_alive("term-def")
+
+    async def bye():
+        await core.terminate_term("term-def", 1.0)
+
+    assert asyncio.run(go()) is True
+    asyncio.run(bye())

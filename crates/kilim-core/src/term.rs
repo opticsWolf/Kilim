@@ -26,6 +26,12 @@ impl TermHandle {
         cols: u16,
         scrollback: usize,
     ) -> Result<Arc<Self>, String> {
+        // Empty cmd = "the platform default" — layouts stay portable.
+        let (cmd, args) = if cmd.is_empty() {
+            crate::shell::default_shell()
+        } else {
+            (cmd.to_string(), args.to_vec())
+        };
         let env: Vec<(String, String)> = std::env::vars().collect();
         let ws = stitch_pty::winsize::Winsize {
             rows,
@@ -33,7 +39,7 @@ impl TermHandle {
             xpixel: 0,
             ypixel: 0,
         };
-        let (backend, child) = spawn_platform(cmd, args, &env, Some(ws), None)
+        let (backend, child) = spawn_platform(&cmd, &args, &env, Some(ws), None)
             .await
             .map_err(|e| e.to_string())?;
         let screen = Arc::new(Mutex::new(HistoryScreen::new(

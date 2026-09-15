@@ -12,6 +12,8 @@ import pytest
 REPO_FILES = [
     "layouts/default.json",
     "layouts/default.perspective.json",
+    "layouts/example.json",
+    "layouts/example.perspective.json",
 ]
 
 
@@ -25,9 +27,14 @@ def _preserve_repo_layouts():
         except OSError:
             backups[path] = None
     yield
+    import os
+
     for path, content in backups.items():
         try:
             if content is None:
+                # Created during the session: leave no test junk behind.
+                if os.path.exists(path):
+                    os.unlink(path)
                 continue
             with open(path, "wb") as f:
                 f.write(content)
