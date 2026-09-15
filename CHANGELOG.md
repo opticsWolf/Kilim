@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.2.1: Qt terminal block cursor — a read-only QPlainTextEdit draws no caret, so the Qt frontend now bakes a reverse-video block into the cell under the terminal cursor (TUI soft-cursor parity), blinking on the system caret clock; it follows moves without dirty rows and its blink frames count as overlay, not content, repaints.
 - v0.2.0: version cut — the theme system rework (base theme + functional token palettes) and the demo-parity frameless Qt chrome rounded up into the 0.2 line; no code changes over v0.1.71.
 - v0.1.71: functional token palettes — every theme maps the canonical element classes (comment/string/keyword/declaration/modifier/function/type/parameter/number/constant) to its own contrasting colors; no per-word rules, and a test pins each applied hex plus a redmean >= 55 gap for all ten themes.
 - v0.1.70: hand-maintained per-scope color tables removed — Kilim themes now adjust chrome only (paper/foreground/selection) and inherit their base theme's functional scope rules verbatim; the Dark Neo pub/render collision came from a patched storage.modifier.rust rule and goes with the tables.
