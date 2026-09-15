@@ -22,7 +22,7 @@ fn syntaxes() -> &'static SyntaxSet {
 }
 
 fn themes() -> &'static RwLock<ThemeSet> {
-    // Starts EMPTY: the registry ships exactly the Kilim eight plus
+    // Starts EMPTY: the registry ships exactly the Kilim ten plus
     // explicit customs (register_custom_theme / ~/.mordant). syntect's
     // load_defaults (Solarized, InspiredGitHub, base16s) is deliberately
     // NOT the base — those names must stay unresolvable.
@@ -52,7 +52,9 @@ impl ThemeRegistry {
     }
 
     /// Clone a theme from our registry (bat assets + customs included).
+    /// Legacy spellings (e.g. `Kilim Dark`) canonicalize first.
     pub fn resolve(name: &str) -> Option<syntect::highlighting::Theme> {
+        let name = crate::kilim_themes::canonical_syntect_name(name).unwrap_or(name);
         themes().read().unwrap().themes.get(name).cloned()
     }
 
@@ -60,10 +62,11 @@ impl ThemeRegistry {
     /// fallback as `background`.
     pub fn foreground(theme_name: &str) -> Option<String> {
         let ts = themes().read().unwrap();
+        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Dark"));
+        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
         let fg = theme?.settings.foreground?;
         Some(format!("#{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b))
     }
@@ -71,12 +74,13 @@ impl ThemeRegistry {
     /// Theme background as `#rrggbb` (for full-bleed Qt panes).
     pub fn background(theme_name: &str) -> Option<String> {
         let ts = themes().read().unwrap();
+        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
         // Same fallback as highlight(): unknown names resolve to the
         // default, so callers (TUI fill, Qt panes, page chrome) agree.
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Dark"));
+        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
         let bg = theme?.settings.background?;
         Some(format!("#{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b))
     }
@@ -94,14 +98,15 @@ impl ThemeRegistry {
             .unwrap_or_else(|| ps.find_syntax_plain_text());
 
         let ts = themes().read().unwrap();
-        // Unknown names fall back to Kilim Dark (always in-registry when
+        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
+        // Unknown names fall back to Kilim Midnight (always in-registry when
         // the markdown feature is on) — never to a name outside the
         // shipped set. A bare registry (no markdown, no customs) yields
         // unstyled lines instead of panicking.
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Dark"));
+        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
         let Some(theme) = theme else {
             return code
                 .lines()
@@ -204,8 +209,8 @@ impl ThemeRegistry {
         syntaxes().syntaxes().iter().map(|s| s.name.clone()).collect()
     }
 
-    /// Import the shipped theme set: exactly the eight Kilim themes
-    /// (four palettes x standard/neo) built from bat + wheel bases.
+    /// Import the shipped theme set: exactly the ten Kilim themes
+    /// (five palettes x standard/neo) built from bat + wheel bases.
     /// Bases are NEVER registered and user customs (~/.mordant/themes)
     /// are NEVER auto-imported — the app exposes only Kilim themes
     /// (`register_custom_theme` stays as the explicit opt-in). Also
@@ -228,7 +233,7 @@ impl ThemeRegistry {
         for (name, theme) in bundled_themes() {
             extra.entry(name).or_insert(theme);
         }
-        // Kilim eight last: mirror closure only touches mordant's lock;
+        // Kilim ten last: mirror closure only touches mordant's lock;
         // ours is held — the same ours->mordant order
         // register_custom_theme uses, so no cycle.
         crate::kilim_themes::ensure_kilim_themes(
@@ -378,14 +383,24 @@ mod tests {
 
     #[test]
     fn highlights_python_without_panic() {
-        let rows = ThemeRegistry::highlight("python", "x = 1\n", "Kilim Dark");
+        let rows = ThemeRegistry::highlight("python", "x = 1\n", "Kilim Midnight");
         assert_eq!(rows.len(), 1);
         assert!(rows[0].iter().any(|s| s.text.contains('x')));
     }
 
     #[test]
+    fn legacy_theme_names_canonicalize() {
+        use crate::kilim_themes::{canonical_syntect_name, kilim_theme};
+        assert_eq!(canonical_syntect_name("Kilim Dark"), Some("Kilim Midnight"));
+        assert_eq!(canonical_syntect_name("kilim_dark_neo"), Some("Kilim Midnight Neo"));
+        assert_eq!(canonical_syntect_name("Kilim Warm"), Some("Kilim Warm"));
+        assert!(kilim_theme("kilim_dark").is_some(), "legacy lace key resolves");
+        assert_eq!(kilim_theme("Kilim Dark").unwrap().lace_key, "kilim_midnight");
+    }
+
+    #[test]
     fn unknown_lang_falls_back() {
-        let rows = ThemeRegistry::highlight("nope-lang", "hi\n", "Kilim Dark");
+        let rows = ThemeRegistry::highlight("nope-lang", "hi\n", "Kilim Midnight");
         assert_eq!(rows.len(), 1);
     }
 
@@ -401,10 +416,10 @@ mod tests {
         ThemeRegistry::import_mordant_themes();
         assert_eq!(
             BUNDLED_THEMES.len(),
-            4,
-            "bundled_themes.txt controls the table: Night Owl + 3 neo JSONs"
+            6,
+            "bundled_themes.txt controls the table: Night Owl + 5 neo JSONs"
         );
-        // Bases are build-only (never registered); the eight built on them are.
+        // Bases are build-only (never registered); the ten built on them are.
         let names = ThemeRegistry::list_themes();
         let mut built = Vec::new();
         for def in KILIM_THEMES {
@@ -423,7 +438,7 @@ mod tests {
     fn kilim_themes_register_both_sides() {
         use crate::kilim_themes::{kilim_theme, KILIM_THEMES};
         ThemeRegistry::import_mordant_themes();
-        assert_eq!(KILIM_THEMES.len(), 4);
+        assert_eq!(KILIM_THEMES.len(), 5);
         for def in KILIM_THEMES {
             // Our registry renders TUI + Qt code panes, standard + neo...
             for name in [def.syntect_name, def.neo_name] {
@@ -436,15 +451,15 @@ mod tests {
                 assert!(bg.r < 200 || def.is_light, "{name} bg matches polarity");
             }
         }
-        assert!(kilim_theme("kilim_dark").is_some());
-        assert!(kilim_theme("kilim_dark_neo").is_some());
+        assert!(kilim_theme("kilim_midnight").is_some());
+        assert!(kilim_theme("kilim_midnight_neo").is_some());
         assert_eq!(kilim_theme("Kilim Warm").unwrap().base_syntect, "gruvbox-dark");
         assert!(kilim_theme("nope").is_none());
         // Neon keys are distinct per palette, syntect names shared.
         let mut neon: Vec<_> = KILIM_THEMES.iter().map(|d| d.neo_key).collect();
         neon.sort();
         neon.dedup();
-        assert_eq!(neon.len(), 4);
+        assert_eq!(neon.len(), 5);
     }
 
         fn bat_bases_stay_pinned() {
@@ -556,9 +571,9 @@ mod tests {
                 .fg
                 .clone()
         };
-        assert_eq!(rfg("Kilim Dark", "pub"), "#ff869a");
-        assert_eq!(rfg("Kilim Dark", "fn"), "#c792ea");
-        assert_eq!(rfg("Kilim Dark", "render"), "#82aaff");
+        assert_eq!(rfg("Kilim Midnight", "pub"), "#ff869a");
+        assert_eq!(rfg("Kilim Midnight", "fn"), "#c792ea");
+        assert_eq!(rfg("Kilim Midnight", "render"), "#82aaff");
         // Light Neo pulls keywords off the orange pile (ayu blue).
         assert_eq!(rfg("Kilim Light Neo", "pub"), "#478acc");
         assert_eq!(rfg("Kilim Light Neo", "fn"), "#e65050");
@@ -584,8 +599,10 @@ mod tests {
     #[cfg(feature = "markdown")]
     fn background_falls_back_like_highlight() {
         ThemeRegistry::import_mordant_themes();
-        let known = ThemeRegistry::background("Kilim Dark");
+        let known = ThemeRegistry::background("Kilim Midnight");
         assert!(known.is_some());
+        // Legacy spellings resolve to the same paper.
+        assert_eq!(ThemeRegistry::background("Kilim Dark"), known);
         // Unknown names resolve to the default — Qt panes, TUI fill and
         // page chrome can never disagree about the paper color.
         assert_eq!(ThemeRegistry::background("nope"), known);
@@ -593,16 +610,16 @@ mod tests {
 
     #[test]
     #[cfg(feature = "markdown")]
-    fn tmtheme_writer_roundtrips_kilim_dark() {
+    fn tmtheme_writer_roundtrips_kilim_midnight() {
         use syntect::highlighting::ThemeSet;
         ThemeRegistry::import_mordant_themes();
         // Mordant resolves the shipped name instead of falling back.
-        let t = mordant::highlighter::resolve_theme("Kilim Dark")
-            .expect("Kilim Dark should be mirrored into mordant's set");
-        let bg = t.settings.background.expect("Kilim Dark has a background");
+        let t = mordant::highlighter::resolve_theme("Kilim Midnight")
+            .expect("Kilim Midnight should be mirrored into mordant's set");
+        let bg = t.settings.background.expect("Kilim Midnight has a background");
         assert_eq!((bg.r, bg.g, bg.b), (0x10, 0x13, 0x19));
         // Writer output re-parses and preserves scope count.
-        let xml = super::theme_to_tmtheme("Kilim Dark", &t);
+        let xml = super::theme_to_tmtheme("Kilim Midnight", &t);
         let back = ThemeSet::load_from_reader(&mut std::io::Cursor::new(xml.as_bytes()))
             .expect("generated plist must parse");
         let bg2 = back.settings.background.expect("round-tripped background");
@@ -612,7 +629,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "markdown")]
-    fn shipped_set_is_exactly_the_kilim_eight() {
+    fn shipped_set_is_exactly_the_kilim_ten() {
         use crate::kilim_themes::KILIM_THEMES;
         ThemeRegistry::import_mordant_themes();
         let names = ThemeRegistry::list_themes();
@@ -624,14 +641,14 @@ mod tests {
         for name in &expected {
             assert!(names.contains(name), "shipped theme missing: {name}");
         }
-        // Reduction proof: bases and former members are gone — the eight
+        // Reduction proof: bases and former members are gone — the ten
         // are BUILT, never registered. Set-difference (not exact length):
         // parallel tests may register customs ("Tiny").
         for gone in ["Dracula", "GitHub", "OneHalfLight", "gruvbox-dark",
                       "Night Owl-color-theme", "tokyo-night-light-color-theme",
                       "ayu-light", "LaserWave-color-theme", "Solarized (dark)",
                       "InspiredGitHub", "aura-theme", "tokyo-night-color-theme",
-                      "Monokai Extended"] {
+                      "Visual Studio Dark+", "OneDark-Pro", "Monokai Extended"] {
             assert!(!names.contains(&gone.to_string()), "unshipped theme leaked: {gone}");
         }
         let extra: Vec<_> = names.iter().filter(|n| !expected.contains(n) && n.as_str() != "Tiny").collect();
@@ -664,4 +681,5 @@ mod tests {
         let rows = ThemeRegistry::highlight("python", "# c\nx = 1\n", "Tiny");
         assert_eq!(rows.len(), 2);
     }
+
 }

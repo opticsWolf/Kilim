@@ -124,10 +124,15 @@ def kilim_theme_defs() -> list[dict]:
 def _normalize_lace_key(key: str) -> str:
     """Forward legacy Kilim Lace keys to the unified names.
 
+    `kilim_dark`/`kilim_dark_neo` became the Midnight pair in v0.1.66.
     `kilim_neo_<pal>` (v0.1.34–35) and `kilim_neon_<pal>` (≤v0.1.33) both
     became `kilim_<pal>_neo`, whose label renders the syntect name.
     Sidecars saved under old names keep working."""
-    for pal in ("dark", "neutral", "light", "warm"):
+    if key == "kilim_dark":
+        return "kilim_midnight"
+    if key in ("kilim_dark_neo", "kilim_neo_dark", "kilim_neon_dark"):
+        return "kilim_midnight_neo"
+    for pal in ("neutral", "light", "warm"):
         if key in (f"kilim_neo_{pal}", f"kilim_neon_{pal}"):
             return f"kilim_{pal}_neo"
     return key
@@ -136,9 +141,9 @@ def _normalize_lace_key(key: str) -> str:
 def register_kilim_lace_themes() -> dict[str, str]:
     """Build the Kilim Lace themes into Lace's registries.
 
-    One "Kilim" group, eight entries: four palettes × classic chassis
+    One "Kilim" group, ten entries: five palettes × classic chassis
     (`kilim_*`) + neo/edge chassis (`kilim_*_neo`). Lace labels render
-    the syntect names ("Kilim Dark Neo"), so all three menus share one
+    the syntect names ("Kilim Midnight Neo"), so all three menus share one
     vocabulary. Returns {lace_key: syntect_name} for unified apply —
     neo maps to neo. Idempotent — safe across multiple windows/tests
     in one process.
@@ -1310,8 +1315,8 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.apply_lace_theme(saved["lace_theme"], persist=False)
         except (OSError, ValueError):
             pass
-        if self.lace_theme is None and "kilim_dark" in self._kilim_by_lace:
-            self.apply_lace_theme("kilim_dark")  # fresh launch opens unified
+        if self.lace_theme is None and "kilim_midnight" in self._kilim_by_lace:
+            self.apply_lace_theme("kilim_midnight")  # fresh launch opens unified
         self._build_menus()
         # Focused dock == active pane (session_active reads it that
         # way), and only a focused text widget draws its cursor. Lace
@@ -1447,7 +1452,7 @@ class KilimWindow(FramelessLaceMainWindow):
     def _build_themes_menu(self):
         """Themes menu: Lace chrome, code (Qt + TUI), markdown fences.
 
-        One shared registry (the Kilim eight, Kilim Dark default) feeds
+        One shared registry (the Kilim ten, Kilim Midnight default) feeds
         code + markdown alike, so no choice can silently fall back.
         Choices persist: code/markdown into the layout file, Lace into
         the sidecar.

@@ -53,11 +53,12 @@ per-pane scrollback, shell choice, and theme names round-trip with it.
 
 ## Themes
 
-Exactly 8, unified everywhere — shell defaults, code tokens, Markdown fences,
+Exactly 10, unified everywhere — shell defaults, code tokens, Markdown fences,
 page chrome, and dock chrome all follow one selection:
 
-`Kilim Dark` / `Dark Neo`, `Kilim Neutral` / `Neutral Neo`,
-`Kilim Light` / `Light Neo`, `Kilim Warm` / `Warm Neo`.
+`Kilim Midnight` / `Midnight Neo`, `Kilim Default` / `Default Neo`,
+`Kilim Neutral` / `Neutral Neo`, `Kilim Light` / `Light Neo`,
+`Kilim Warm` / `Warm Neo`.
 
 Palettes live in `crates/kilim-core/src/kilim_themes.rs` (syntect built from
 the closest expressive base, chrome-only adjustment); unknown theme names

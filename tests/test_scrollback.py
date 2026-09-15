@@ -295,23 +295,24 @@ def test_themes_menu_switches_and_repaints():
         assert "Code (Qt + TUI)" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
         code_actions = {a.text(): a for a in subs["Code (Qt + TUI)"].actions()}
         md_actions = {a.text(): a for a in subs["Markdown"].actions()}
-        # One shared eight: code + markdown lists match, no Pin menu.
+        # One shared ten: code + markdown lists match, no Pin menu.
         assert sorted(code_actions) == sorted(md_actions), "code/md lists diverged"
-        assert len(code_actions) == 8
+        assert len(code_actions) == 10
         assert "&Pin" not in menus
         code_actions["Kilim Warm"].trigger()
         assert w.bridge.core.theme() == "Kilim Warm"
-        md_actions["Kilim Dark Neo"].trigger()
-        assert w.bridge.core.markdown_theme() == "Kilim Dark Neo"
+        md_actions["Kilim Midnight Neo"].trigger()
+        assert w.bridge.core.markdown_theme() == "Kilim Midnight Neo"
         raw = json.loads(open("layouts/default.json", encoding="utf-8").read())
         assert raw["layout"]["theme"] == "Kilim Warm"
-        assert raw["layout"]["markdown_theme"] == "Kilim Dark Neo"
-        # Lace menu is Kilim-only and flat: 8 actions, no stock presets.
+        assert raw["layout"]["markdown_theme"] == "Kilim Midnight Neo"
+        # Lace menu is Kilim-only and flat: 10 actions, no stock presets.
         lace_acts = [a for a in subs["Lace"].actions() if a.menu() is None]
-        assert [a.text() for a in lace_acts] == ["Kilim Dark", "Kilim Dark Neo",
+        assert [a.text() for a in lace_acts] == ["Kilim Midnight", "Kilim Midnight Neo",
+            "Kilim Default", "Kilim Default Neo",
             "Kilim Neutral", "Kilim Neutral Neo", "Kilim Light", "Kilim Light Neo",
             "Kilim Warm", "Kilim Warm Neo"]
-        lace_acts[4].trigger()  # Kilim Light: chrome applies immediately.
+        next(a for a in lace_acts if a.text() == "Kilim Light").trigger()
         assert w.lace_theme == "kilim_light", "lace choice not recorded"
     finally:
         open(layout_file, "w", encoding="utf-8").write(before)
@@ -320,7 +321,7 @@ def test_themes_menu_switches_and_repaints():
 
 
 def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
-    """Kilim group heads the Lace menu; fresh windows open unified Dark."""
+    """Kilim group heads the Lace menu; fresh windows open unified Midnight."""
     import json
     import shutil
 
@@ -330,12 +331,16 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     from lace.dock_style_manager import theme_groups
 
     mapping = register_kilim_lace_themes()
-    assert set(mapping) == {"kilim_dark", "kilim_neutral", "kilim_light", "kilim_warm",
-                              "kilim_dark_neo", "kilim_neutral_neo", "kilim_light_neo", "kilim_warm_neo"}
-    assert mapping["kilim_dark_neo"] == "Kilim Dark Neo"  # neo chrome → neo code/md
+    assert set(mapping) == {"kilim_midnight", "kilim_midnight_neo",
+                            "kilim_default", "kilim_default_neo",
+                            "kilim_neutral", "kilim_neutral_neo",
+                            "kilim_light", "kilim_light_neo",
+                            "kilim_warm", "kilim_warm_neo"}
+    assert mapping["kilim_midnight_neo"] == "Kilim Midnight Neo"  # neo chrome → neo code/md
     groups = {title: [k for _, k in members] for title, members in theme_groups()}
     assert "Kilim Neon" not in groups, "legacy group dropped; single Kilim submenu only"
-    assert groups["Kilim"] == ["kilim_dark", "kilim_dark_neo",
+    assert groups["Kilim"] == ["kilim_midnight", "kilim_midnight_neo",
+                                      "kilim_default", "kilim_default_neo",
                                       "kilim_neutral", "kilim_neutral_neo",
                                       "kilim_light", "kilim_light_neo",
                                       "kilim_warm", "kilim_warm_neo"]
@@ -348,9 +353,9 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     try:
         w.show()
         app.processEvents()
-        assert w.lace_theme == "kilim_dark"
-        assert w.bridge.core.theme() == "Kilim Dark"
-        assert w.bridge.core.markdown_theme() == "Kilim Dark"
+        assert w.lace_theme == "kilim_midnight"
+        assert w.bridge.core.theme() == "Kilim Midnight"
+        assert w.bridge.core.markdown_theme() == "Kilim Midnight"
         w.apply_lace_theme("kilim_light")
         assert w.bridge.core.theme() == "Kilim Light"
         assert w.bridge.core.markdown_theme() == "Kilim Light"
@@ -362,10 +367,10 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
         raw = json.loads(layout.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Light Neo"
         assert json.loads(sidecar.read_text(encoding="utf-8"))["lace_theme"] == "kilim_light_neo"
-        # Legacy keys normalize forward.
+        # Legacy keys normalize forward (the dark pair is now Midnight).
         w.apply_lace_theme("kilim_neo_dark")
-        assert w.lace_theme == "kilim_dark_neo"
-        assert w.bridge.core.theme() == "Kilim Dark Neo"
+        assert w.lace_theme == "kilim_midnight_neo"
+        assert w.bridge.core.theme() == "Kilim Midnight Neo"
     finally:
         w.close()
         app.processEvents()

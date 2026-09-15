@@ -22,12 +22,12 @@ pub struct Layout {
     pub markdown_theme: String,
 }
 
-/// Default code theme: unified Kilim Dark where available (markdown
+/// Default code theme: unified Kilim Midnight where available (markdown
 /// feature carries bat assets + Kilim themes); plain syntect default
 /// otherwise so the default is always in-registry (no silent fallback).
 #[cfg(feature = "markdown")]
 fn default_theme() -> String {
-    "Kilim Dark".to_string()
+    "Kilim Midnight".to_string()
 }
 
 #[cfg(not(feature = "markdown"))]
@@ -37,7 +37,7 @@ fn default_theme() -> String {
 
 #[cfg(feature = "markdown")]
 fn default_markdown_theme() -> String {
-    "Kilim Dark".to_string()
+    "Kilim Midnight".to_string()
 }
 
 #[cfg(not(feature = "markdown"))]
@@ -238,7 +238,7 @@ mod tests {
         let (l, _) = Layout::from_json(doc).unwrap();
         assert_eq!(l.theme, l.markdown_theme);
         #[cfg(feature = "markdown")]
-        assert_eq!(l.theme, "Kilim Dark");
+        assert_eq!(l.theme, "Kilim Midnight");
         #[cfg(not(feature = "markdown"))]
         assert_eq!(l.theme, "InspiredGitHub");
     }

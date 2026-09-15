@@ -456,14 +456,14 @@ mod live_tests {
         let src = dir.join("s.py");
         std::fs::write(&src, "x = 1\n# hi\n").unwrap();
         let doc = format!(
-            r#"{{"layout": {{"root": {{"type": "pane", "pane_id": "code"}}, "active": "code", "theme": "Kilim Dark", "markdown_theme": "Kilim Dark"}}, "panes": [{{"id": "code", "title": "s.py", "kind": "file", "path": "{}"}}]}}"#,
+            r#"{{"layout": {{"root": {{"type": "pane", "pane_id": "code"}}, "active": "code", "theme": "Kilim Midnight", "markdown_theme": "Kilim Midnight"}}, "panes": [{{"id": "code", "title": "s.py", "kind": "file", "path": "{}"}}]}}"#,
             src.to_string_lossy().replace('\\', "/")
         );
         let mut app = App::new(&doc).unwrap();
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| render(f, &mut app)).unwrap();
-        let paper = Color::Rgb(0x10, 0x13, 0x19); // Kilim Dark editor_bg
+        let paper = Color::Rgb(0x10, 0x13, 0x19); // Kilim Midnight editor_bg
         let buf = term.backend().buffer();
         // End-of-line padding beyond the short first row.
         assert_eq!(buf[(97, 1)].bg, paper, "line tail not paper");
@@ -480,8 +480,8 @@ mod live_tests {
 
         use super::term_cell_span;
 
-        let fg = Color::Rgb(0xCB, 0xD0, 0xDC); // Kilim Dark text
-        let bg = Color::Rgb(0x10, 0x13, 0x19); // Kilim Dark paper
+        let fg = Color::Rgb(0xCB, 0xD0, 0xDC); // Kilim Midnight text
+        let bg = Color::Rgb(0x10, 0x13, 0x19); // Kilim Midnight paper
         let sp = term_cell_span("x", "default", "default", 0, fg, bg);
         assert_eq!(sp.style.fg, Some(fg));
         assert_eq!(sp.style.bg, Some(bg));
@@ -502,7 +502,7 @@ mod live_tests {
     #[tokio::test]
     #[cfg(windows)]
     async fn term_pane_syncs_resize_and_fills() {
-        const TERM_DOC: &str = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t", "theme": "Kilim Dark"}, "panes": [{"id": "t", "title": "sh", "kind": "term", "cmd": "powershell.exe", "rows": 24, "cols": 80}]}"#;
+        const TERM_DOC: &str = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t", "theme": "Kilim Midnight"}, "panes": [{"id": "t", "title": "sh", "kind": "term", "cmd": "powershell.exe", "rows": 24, "cols": 80}]}"#;
 
         fn kind_dims(app: &App) -> (u16, u16) {
             match &app.session.panes["t"].kind {

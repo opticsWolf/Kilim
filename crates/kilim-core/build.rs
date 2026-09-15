@@ -42,7 +42,7 @@ fn main() {
     }
 
     // Generate the include table: ONLY the allowlisted stems
-    // (bundled_themes.txt) — the registry ships exactly the Kilim eight.
+    // (bundled_themes.txt) — the registry ships exactly the Kilim ten.
     let allow: std::collections::HashSet<String> = std::fs::read_to_string(
         Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("bundled_themes.txt"),
     )

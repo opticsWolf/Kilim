@@ -19,7 +19,16 @@ pub struct Session {
 impl Session {
     /// Parse a `layouts/*.json` doc: `{ "layout": Layout, "panes": [Pane] }`.
     pub fn from_json(s: &str) -> Result<Self, String> {
-        let (layout, panes) = Layout::from_json(s).map_err(|e| e.to_string())?;
+        let (mut layout, panes) = Layout::from_json(s).map_err(|e| e.to_string())?;
+        // Legacy names in saved layouts canonicalize on load (v0.1.66:
+        // Kilim Dark → Kilim Midnight), so menus, saves and the registry
+        // all agree on one spelling.
+        if let Some(name) = crate::kilim_themes::canonical_syntect_name(&layout.theme) {
+            layout.theme = name.to_string();
+        }
+        if let Some(name) = crate::kilim_themes::canonical_syntect_name(&layout.markdown_theme) {
+            layout.markdown_theme = name.to_string();
+        }
         let map: HashMap<String, Pane> = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         // Validate: every referenced pane exists.
         for id in layout.pane_ids() {
@@ -247,10 +256,11 @@ impl Session {
     }
 
     pub fn set_theme(&mut self, theme: &str) -> Result<(), String> {
-        if !ThemeRegistry::list_themes().contains(&theme.to_string()) {
+        let name = crate::kilim_themes::canonical_syntect_name(theme).unwrap_or(theme);
+        if !ThemeRegistry::list_themes().iter().any(|t| t == name) {
             return Err(format!("unknown code theme '{theme}'"));
         }
-        self.layout.theme = theme.to_string();
+        self.layout.theme = name.to_string();
         Ok(())
     }
 
@@ -259,10 +269,11 @@ impl Session {
     }
 
     pub fn set_markdown_theme(&mut self, theme: &str) -> Result<(), String> {
-        if !ThemeRegistry::list_themes().contains(&theme.to_string()) {
+        let name = crate::kilim_themes::canonical_syntect_name(theme).unwrap_or(theme);
+        if !ThemeRegistry::list_themes().iter().any(|t| t == name) {
             return Err(format!("unknown markdown theme '{theme}'"));
         }
-        self.layout.markdown_theme = theme.to_string();
+        self.layout.markdown_theme = name.to_string();
         Ok(())
     }
 
@@ -537,8 +548,9 @@ mod markdown_tests {
         assert!(s.set_theme("Dracula").is_err());
         assert!(s.set_markdown_theme("Solarized (dark)").is_err());
         assert!(s.set_theme("Kilim Dark Neo").is_ok());
-        // Rejected names leave the previous theme in place.
-        assert_eq!(s.theme(), "Kilim Dark Neo");
+        // Legacy input canonicalizes: rejected names leave the theme alone,
+        // legacy names adopt the current spelling.
+        assert_eq!(s.theme(), "Kilim Midnight Neo");
     }
 
     #[test]
