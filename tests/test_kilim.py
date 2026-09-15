@@ -10,7 +10,7 @@ DOC = {
     "layout": {
         "root": {"type": "pane", "pane_id": "code"},
         "active": "code",
-        "theme": "Kilim Dark",
+        "theme": "Kilim Midnight",
     },
     "panes": [
         {"id": "code", "title": "s.py", "kind": "file", "path": "sample.py"},
@@ -37,7 +37,7 @@ def test_layout_roundtrip(session):
 
 def test_themes_nonempty():
     assert "Kilim Midnight" in list_themes()
-    assert "Kilim Dark" not in list_themes(), "legacy label stays an alias only"
+    assert "Kilim Dark" in list_themes()
     assert len(list_syntaxes()) > 10
 
 
@@ -94,7 +94,6 @@ def test_spawn_term_adds_live_shell(tmp_path, monkeypatch):
 def test_markdown_theme_get_set_and_doc_persist(session):
     from kilim import list_themes, markdown_theme_names
 
-    # The fixture names the legacy `Kilim Dark`; loading canonicalizes it.
     assert session.markdown_theme() == "Kilim Midnight"
     session.set_markdown_theme("Kilim Warm Neo")
     assert session.markdown_theme() == "Kilim Warm Neo"
@@ -121,7 +120,7 @@ def test_theme_names_are_the_kilim_ten():
     from kilim import list_themes, markdown_theme_names
 
     expected = ["Kilim Midnight", "Kilim Midnight Neo",
-                "Kilim Default", "Kilim Default Neo",
+                "Kilim Dark", "Kilim Dark Neo",
                 "Kilim Light", "Kilim Light Neo",
                 "Kilim Neutral", "Kilim Neutral Neo",
                 "Kilim Warm", "Kilim Warm Neo"]

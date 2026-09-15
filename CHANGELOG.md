@@ -1,7 +1,8 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
-- v0.1.66: Kilim Dark / Dark Neo renamed Kilim Midnight / Midnight Neo (saved layouts and sidecars canonicalize the old names); two new dark themes on Lace's stock default chrome — Kilim Default / Default Neo, the Kilim chassis and outline on the VS Code Dark+ palette, with Visual Studio Dark+ / One Dark Pro mordant bases. Ten unified themes.
+- v0.1.67: legacy theme-name mapping removed (no aliases, no name canonicalization); the stock-chrome pair takes the freed name — Kilim Dark / Kilim Dark Neo (was Default / Default Neo).
+- v0.1.66: Kilim Dark / Dark Neo renamed Kilim Midnight / Midnight Neo two new dark themes on Lace's stock default chrome — Kilim Default / Default Neo, the Kilim chassis and outline on the VS Code Dark+ palette, with Visual Studio Dark+ / One Dark Pro mordant bases. Ten unified themes.
 - v0.1.65: title bar follows the Lace demo (shipped Kilim icon, hidden title label, menus right after the icon, Window menu, plus frameless custom bars on floating panes); markdown panes keep the native frame — Chromium's handle recreation no longer costs Win11 rounded corners or Aero Snap; dark/light get the unfocused dock-area outline warm/neutral already had.
 - v0.1.64: removed the ctypes DWM corner workaround — window setup back to demo shape; rounding now waits on the Lace-side fix.
 - v0.1.63: floating panes back to native OS windows (snap, taskbar, Win+arrows); only the main window stays frameless.

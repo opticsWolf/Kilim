@@ -121,23 +121,6 @@ def kilim_theme_defs() -> list[dict]:
     return defs if isinstance(defs, list) else []
 
 
-def _normalize_lace_key(key: str) -> str:
-    """Forward legacy Kilim Lace keys to the unified names.
-
-    `kilim_dark`/`kilim_dark_neo` became the Midnight pair in v0.1.66.
-    `kilim_neo_<pal>` (v0.1.34–35) and `kilim_neon_<pal>` (≤v0.1.33) both
-    became `kilim_<pal>_neo`, whose label renders the syntect name.
-    Sidecars saved under old names keep working."""
-    if key == "kilim_dark":
-        return "kilim_midnight"
-    if key in ("kilim_dark_neo", "kilim_neo_dark", "kilim_neon_dark"):
-        return "kilim_midnight_neo"
-    for pal in ("neutral", "light", "warm"):
-        if key in (f"kilim_neo_{pal}", f"kilim_neon_{pal}"):
-            return f"kilim_{pal}_neo"
-    return key
-
-
 def register_kilim_lace_themes() -> dict[str, str]:
     """Build the Kilim Lace themes into Lace's registries.
 
@@ -1546,11 +1529,9 @@ class KilimWindow(FramelessLaceMainWindow):
         Kilim chrome (`kilim_*`) is unified: selecting it also sets the
         same-named code + markdown themes and repaints (one click, all
         surfaces) — neo chrome selects the neo code/md themes.
-        Legacy keys (`kilim_neo_*`, `kilim_neon_*`) normalize forward.
         """
         from lace.dock_style_manager import apply_dock_theme
 
-        key = _normalize_lace_key(key)
         if apply_dock_theme(key):
             self.lace_theme = key
             if key in self._kilim_by_lace:

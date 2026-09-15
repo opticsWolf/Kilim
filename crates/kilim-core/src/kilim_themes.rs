@@ -2,7 +2,7 @@
 //!
 //! Five themes, same expressive intent on every surface:
 //! - Midnight: Lace `dark` blended toward `midnight` (deep navy-charcoal).
-//! - Default: Lace's stock default chrome (VS Code Dark+ gray/blue).
+//! - Dark: Lace's stock default chrome (VS Code Dark+ gray/blue).
 //! - Neutral: Lace `neutral` silver workstation.
 //! - Light: Lace `light` high-clarity gray.
 //! - Warm: Lace `warm` cozy brown.
@@ -11,12 +11,12 @@
 //! only the chrome (background/foreground/gutter) — token colors stay
 //! expressive as authored:
 //! - Midnight → Night Owl (deep-navy, vivid tokens)
-//! - Default → Visual Studio Dark+ (the stock look)
+//! - Dark → Visual Studio Dark+ (the stock look)
 //! - Neutral → GitHub light (crisp on silver)
 //! - Light → OneHalfLight
 //! - Warm → gruvbox-dark (the warm expressive classic)
 //!
-//! Lace geometry is intentionally NOT here: all four share one chassis
+//! Lace geometry is intentionally NOT here: all five share one chassis
 //! (built Python-side from these colors). This module owns color only.
 
 /// One unified theme: palette + closest syntect base.
@@ -95,11 +95,11 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
         selection: "#26355c",
     },
     KilimThemeDef {
-        lace_key: "kilim_default",
-        neo_key: "kilim_default_neo",
-        syntect_name: "Kilim Default",
+        lace_key: "kilim_dark",
+        neo_key: "kilim_dark_neo",
+        syntect_name: "Kilim Dark",
         base_syntect: "Visual Studio Dark+",
-        neo_name: "Kilim Default Neo",
+        neo_name: "Kilim Dark Neo",
         neo_base: "OneDark-Pro",
         // Both stock bases paint pub and fn the same blue/purple (Rust's
         // grammar scopes `pub` as storage.modifier.rust); the exact atom
@@ -232,48 +232,11 @@ pub const KILIM_THEMES: &[KilimThemeDef; 5] = &[
 #[cfg(feature = "markdown")]
 pub(crate) const BAT_BASES: &[&str] = &["GitHub", "OneHalfLight", "gruvbox-dark", "Dracula"];
 
-/// Look up a definition by either Lace key, syntect name, or a legacy
-/// spelling (see [`LEGACY_LACE_ALIASES`]).
+/// Look up a definition by either Lace key or syntect name.
 pub fn kilim_theme(id: &str) -> Option<&'static KilimThemeDef> {
-    let id = canonical_lace_key(id);
     KILIM_THEMES
         .iter()
         .find(|d| d.lace_key == id || d.neo_key == id || d.syntect_name == id || d.neo_name == id)
-}
-
-/// Pre-rename spellings → current lace key. The dark pair became Midnight
-/// in v0.1.66; saved layouts, sidecars and sidecar themes still name it, so
-/// every lookup canonicalizes instead of failing.
-const LEGACY_LACE_ALIASES: &[(&str, &str)] = &[
-    ("kilim_dark", "kilim_midnight"),
-    ("kilim_dark_neo", "kilim_midnight_neo"),
-    ("kilim_neo_dark", "kilim_midnight_neo"),
-    ("kilim_neon_dark", "kilim_midnight_neo"),
-    ("Kilim Dark", "kilim_midnight"),
-    ("Kilim Dark Neo", "kilim_midnight_neo"),
-];
-
-/// Map any legacy spelling onto the current lace key (identity otherwise).
-fn canonical_lace_key(name: &str) -> &str {
-    LEGACY_LACE_ALIASES
-        .iter()
-        .find(|(old, _)| *old == name)
-        .map(|(_, new)| *new)
-        .unwrap_or(name)
-}
-
-/// Canonical syntect (code/markdown) name for any Kilim spelling — Lace
-/// key, neo key, either label, or a legacy alias.
-pub fn canonical_syntect_name(name: &str) -> Option<&'static str> {
-    let canon = canonical_lace_key(name);
-    let d = KILIM_THEMES.iter().find(|d| {
-        d.lace_key == canon || d.neo_key == canon || d.syntect_name == canon || d.neo_name == canon
-    })?;
-    if canon == d.neo_key || canon == d.neo_name {
-        Some(d.neo_name)
-    } else {
-        Some(d.syntect_name)
-    }
 }
 
 /// Build the ten syntect themes (five palettes × standard/neo) from

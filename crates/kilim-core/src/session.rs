@@ -19,16 +19,7 @@ pub struct Session {
 impl Session {
     /// Parse a `layouts/*.json` doc: `{ "layout": Layout, "panes": [Pane] }`.
     pub fn from_json(s: &str) -> Result<Self, String> {
-        let (mut layout, panes) = Layout::from_json(s).map_err(|e| e.to_string())?;
-        // Legacy names in saved layouts canonicalize on load (v0.1.66:
-        // Kilim Dark → Kilim Midnight), so menus, saves and the registry
-        // all agree on one spelling.
-        if let Some(name) = crate::kilim_themes::canonical_syntect_name(&layout.theme) {
-            layout.theme = name.to_string();
-        }
-        if let Some(name) = crate::kilim_themes::canonical_syntect_name(&layout.markdown_theme) {
-            layout.markdown_theme = name.to_string();
-        }
+        let (layout, panes) = Layout::from_json(s).map_err(|e| e.to_string())?;
         let map: HashMap<String, Pane> = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         // Validate: every referenced pane exists.
         for id in layout.pane_ids() {
@@ -256,11 +247,10 @@ impl Session {
     }
 
     pub fn set_theme(&mut self, theme: &str) -> Result<(), String> {
-        let name = crate::kilim_themes::canonical_syntect_name(theme).unwrap_or(theme);
-        if !ThemeRegistry::list_themes().iter().any(|t| t == name) {
+        if !ThemeRegistry::list_themes().contains(&theme.to_string()) {
             return Err(format!("unknown code theme '{theme}'"));
         }
-        self.layout.theme = name.to_string();
+        self.layout.theme = theme.to_string();
         Ok(())
     }
 
@@ -269,11 +259,10 @@ impl Session {
     }
 
     pub fn set_markdown_theme(&mut self, theme: &str) -> Result<(), String> {
-        let name = crate::kilim_themes::canonical_syntect_name(theme).unwrap_or(theme);
-        if !ThemeRegistry::list_themes().iter().any(|t| t == name) {
+        if !ThemeRegistry::list_themes().contains(&theme.to_string()) {
             return Err(format!("unknown markdown theme '{theme}'"));
         }
-        self.layout.markdown_theme = name.to_string();
+        self.layout.markdown_theme = theme.to_string();
         Ok(())
     }
 
@@ -493,7 +482,7 @@ mod markdown_tests {
         std::fs::write(&md, "# F\n\n```python\n# comment\nx = 1\n```\n").unwrap();
         let mut s = Session::from_json(&doc_with_md(&md.to_string_lossy().replace('\\', "/"))).unwrap();
         s.set_theme("Kilim Light").unwrap();
-        s.set_markdown_theme("Kilim Dark Neo").unwrap();
+        s.set_markdown_theme("Kilim Midnight Neo").unwrap();
         let html = s.markdown_html("notes").unwrap();
         // Neo keeps Dracula's scopes: comment green; Kilim Light differs.
         assert!(html.contains("#6272a4"), "expected neo fence colors, got: {html}");
@@ -502,7 +491,7 @@ mod markdown_tests {
         let vivid_rows = crate::highlight::ThemeRegistry::highlight(
             "markdown",
             &std::fs::read_to_string(&md).unwrap(),
-            "Kilim Dark Neo",
+            "Kilim Midnight Neo",
         );
         assert_eq!(rows.len(), vivid_rows.len());
     }
@@ -515,12 +504,12 @@ mod markdown_tests {
         let md = dir.join("m.md");
         std::fs::write(&md, "# M\n\n```mermaid\ngraph TD; A-->B\n```\n").unwrap();
         let mut s = Session::from_json(&doc_with_md(&md.to_string_lossy().replace('\\', "/"))).unwrap();
-        s.set_markdown_theme("Kilim Dark").unwrap();
+        s.set_markdown_theme("Kilim Midnight").unwrap();
         let html = s.markdown_html("notes").unwrap();
         assert!(html.contains("<svg"), "expected server-rendered diagram, got: {html}");
         assert!(
             html.contains("#101319"),
-            "expected Kilim-Dark-derived diagram colors, got: {}",
+            "expected Kilim-Midnight-derived diagram colors, got: {}",
             &html[..html.len().min(2000)]
         );
     }
@@ -532,9 +521,9 @@ mod markdown_tests {
         let md = dir.join("p.md");
         std::fs::write(&md, "# P\n\nHi.\n").unwrap();
         let mut s = Session::from_json(&doc_with_md(&md.to_string_lossy().replace('\\', "/"))).unwrap();
-        s.set_markdown_theme("Kilim Dark").unwrap();
+        s.set_markdown_theme("Kilim Midnight").unwrap();
         let dark = s.markdown_page("notes").unwrap();
-        assert!(dark.contains("background-color: #101319"), "Kilim Dark page bg missing");
+        assert!(dark.contains("background-color: #101319"), "Kilim Midnight page bg missing");
         assert!(dark.contains("color-scheme: dark"), "expected dark scheme");
         s.set_markdown_theme("Kilim Light").unwrap();
         let light = s.markdown_page("notes").unwrap();
@@ -547,9 +536,8 @@ mod markdown_tests {
         let mut s = Session::from_json(&doc_with_md("x.md")).unwrap();
         assert!(s.set_theme("Dracula").is_err());
         assert!(s.set_markdown_theme("Solarized (dark)").is_err());
-        assert!(s.set_theme("Kilim Dark Neo").is_ok());
-        // Legacy input canonicalizes: rejected names leave the theme alone,
-        // legacy names adopt the current spelling.
+        assert!(s.set_theme("Kilim Midnight Neo").is_ok());
+        // Rejected names leave the previous theme in place.
         assert_eq!(s.theme(), "Kilim Midnight Neo");
     }
 

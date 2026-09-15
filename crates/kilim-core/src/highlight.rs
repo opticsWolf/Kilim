@@ -52,9 +52,7 @@ impl ThemeRegistry {
     }
 
     /// Clone a theme from our registry (bat assets + customs included).
-    /// Legacy spellings (e.g. `Kilim Dark`) canonicalize first.
     pub fn resolve(name: &str) -> Option<syntect::highlighting::Theme> {
-        let name = crate::kilim_themes::canonical_syntect_name(name).unwrap_or(name);
         themes().read().unwrap().themes.get(name).cloned()
     }
 
@@ -62,11 +60,10 @@ impl ThemeRegistry {
     /// fallback as `background`.
     pub fn foreground(theme_name: &str) -> Option<String> {
         let ts = themes().read().unwrap();
-        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
         let fg = theme?.settings.foreground?;
         Some(format!("#{:02x}{:02x}{:02x}", fg.r, fg.g, fg.b))
     }
@@ -74,13 +71,12 @@ impl ThemeRegistry {
     /// Theme background as `#rrggbb` (for full-bleed Qt panes).
     pub fn background(theme_name: &str) -> Option<String> {
         let ts = themes().read().unwrap();
-        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
         // Same fallback as highlight(): unknown names resolve to the
         // default, so callers (TUI fill, Qt panes, page chrome) agree.
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
         let bg = theme?.settings.background?;
         Some(format!("#{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b))
     }
@@ -98,15 +94,14 @@ impl ThemeRegistry {
             .unwrap_or_else(|| ps.find_syntax_plain_text());
 
         let ts = themes().read().unwrap();
-        let name = crate::kilim_themes::canonical_syntect_name(theme_name).unwrap_or(theme_name);
         // Unknown names fall back to Kilim Midnight (always in-registry when
         // the markdown feature is on) — never to a name outside the
         // shipped set. A bare registry (no markdown, no customs) yields
         // unstyled lines instead of panicking.
         #[cfg(feature = "markdown")]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.get("Kilim Midnight"));
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.get("Kilim Midnight"));
         #[cfg(not(feature = "markdown"))]
-        let theme = ts.themes.get(name).or_else(|| ts.themes.values().next());
+        let theme = ts.themes.get(theme_name).or_else(|| ts.themes.values().next());
         let Some(theme) = theme else {
             return code
                 .lines()
@@ -389,16 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_theme_names_canonicalize() {
-        use crate::kilim_themes::{canonical_syntect_name, kilim_theme};
-        assert_eq!(canonical_syntect_name("Kilim Dark"), Some("Kilim Midnight"));
-        assert_eq!(canonical_syntect_name("kilim_dark_neo"), Some("Kilim Midnight Neo"));
-        assert_eq!(canonical_syntect_name("Kilim Warm"), Some("Kilim Warm"));
-        assert!(kilim_theme("kilim_dark").is_some(), "legacy lace key resolves");
-        assert_eq!(kilim_theme("Kilim Dark").unwrap().lace_key, "kilim_midnight");
-    }
-
-    #[test]
     fn unknown_lang_falls_back() {
         let rows = ThemeRegistry::highlight("nope-lang", "hi\n", "Kilim Midnight");
         assert_eq!(rows.len(), 1);
@@ -601,8 +586,6 @@ mod tests {
         ThemeRegistry::import_mordant_themes();
         let known = ThemeRegistry::background("Kilim Midnight");
         assert!(known.is_some());
-        // Legacy spellings resolve to the same paper.
-        assert_eq!(ThemeRegistry::background("Kilim Dark"), known);
         // Unknown names resolve to the default — Qt panes, TUI fill and
         // page chrome can never disagree about the paper color.
         assert_eq!(ThemeRegistry::background("nope"), known);

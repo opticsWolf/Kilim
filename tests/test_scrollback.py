@@ -309,7 +309,7 @@ def test_themes_menu_switches_and_repaints():
         # Lace menu is Kilim-only and flat: 10 actions, no stock presets.
         lace_acts = [a for a in subs["Lace"].actions() if a.menu() is None]
         assert [a.text() for a in lace_acts] == ["Kilim Midnight", "Kilim Midnight Neo",
-            "Kilim Default", "Kilim Default Neo",
+            "Kilim Dark", "Kilim Dark Neo",
             "Kilim Neutral", "Kilim Neutral Neo", "Kilim Light", "Kilim Light Neo",
             "Kilim Warm", "Kilim Warm Neo"]
         next(a for a in lace_acts if a.text() == "Kilim Light").trigger()
@@ -332,7 +332,7 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
 
     mapping = register_kilim_lace_themes()
     assert set(mapping) == {"kilim_midnight", "kilim_midnight_neo",
-                            "kilim_default", "kilim_default_neo",
+                            "kilim_dark", "kilim_dark_neo",
                             "kilim_neutral", "kilim_neutral_neo",
                             "kilim_light", "kilim_light_neo",
                             "kilim_warm", "kilim_warm_neo"}
@@ -340,7 +340,7 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     groups = {title: [k for _, k in members] for title, members in theme_groups()}
     assert "Kilim Neon" not in groups, "legacy group dropped; single Kilim submenu only"
     assert groups["Kilim"] == ["kilim_midnight", "kilim_midnight_neo",
-                                      "kilim_default", "kilim_default_neo",
+                                      "kilim_dark", "kilim_dark_neo",
                                       "kilim_neutral", "kilim_neutral_neo",
                                       "kilim_light", "kilim_light_neo",
                                       "kilim_warm", "kilim_warm_neo"]
@@ -367,10 +367,6 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
         raw = json.loads(layout.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Light Neo"
         assert json.loads(sidecar.read_text(encoding="utf-8"))["lace_theme"] == "kilim_light_neo"
-        # Legacy keys normalize forward (the dark pair is now Midnight).
-        w.apply_lace_theme("kilim_neo_dark")
-        assert w.lace_theme == "kilim_midnight_neo"
-        assert w.bridge.core.theme() == "Kilim Midnight Neo"
     finally:
         w.close()
         app.processEvents()
@@ -391,12 +387,12 @@ def test_file_pane_no_phantom_lines_and_full_bleed_bg(tmp_path):
     src.write_text("x = 1\n# hi\n", encoding="utf-8")  # trailing newline: the old doubling case
     doc = {
         "layout": {"root": {"type": "pane", "pane_id": "code"}, "active": "code",
-                   "theme": "Kilim Dark", "markdown_theme": "Kilim Dark"},
+                   "theme": "Kilim Midnight", "markdown_theme": "Kilim Midnight"},
         "panes": [{"id": "code", "title": "s.py", "kind": "file", "path": str(src)}],
     }
     bridge = Bridge(json.dumps(doc))
     try:
-        assert theme_background("Kilim Dark") == "#101319"
+        assert theme_background("Kilim Midnight") == "#101319"
         # Unknown names fall back to the default paper (Qt/TUI/chrome agree).
         assert theme_background("nope") == "#101319"
         pane = FilePane(bridge, "code")
@@ -467,7 +463,7 @@ def test_term_pane_follows_code_theme():
 
     app, w = _window()  # import runs here; registry starts empty
     try:
-        assert theme_foreground("Kilim Dark") != ""
+        assert theme_foreground("Kilim Midnight") != ""
         pane = w.term_panes["term1"]
         pane._ensure_theme()
         assert pane._theme_name == w.bridge.core.theme()

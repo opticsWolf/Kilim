@@ -56,7 +56,7 @@ per-pane scrollback, shell choice, and theme names round-trip with it.
 Exactly 10, unified everywhere — shell defaults, code tokens, Markdown fences,
 page chrome, and dock chrome all follow one selection:
 
-`Kilim Midnight` / `Midnight Neo`, `Kilim Default` / `Default Neo`,
+`Kilim Midnight` / `Midnight Neo`, `Kilim Dark` / `Dark Neo`,
 `Kilim Neutral` / `Neutral Neo`, `Kilim Light` / `Light Neo`,
 `Kilim Warm` / `Warm Neo`.
 
