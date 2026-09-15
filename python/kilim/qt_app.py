@@ -326,6 +326,14 @@ class _TermView(QPlainTextEdit):
         self._press_pos = None  # click-vs-drag bookkeeping for links
         self._press_link = None
 
+    def focusNextPrevChild(self, next: bool) -> bool:  # noqa: A002 (Qt name)
+        """Tab belongs to the terminal, not to focus navigation.
+
+        QWidget::event intercepts Tab/Backtab for focusNextPrevChild()
+        *before* keyPressEvent runs, so without this the shell never sees a
+        Tab at all (it just moves focus into the dock chrome)."""
+        return False
+
     def keyPressEvent(self, e):
         self._owner.on_key(e)
 
@@ -1026,11 +1034,6 @@ class TerminalPane(QWidget):
 
     # ── input (snaps back to live tail) ──
     def on_key(self, e):
-        if e.key() == Qt.Key_Escape:
-            self.view.setTextCursor(QTextCursor(self.view.document()))
-            self._sel = None
-            self._follow = True
-            return
         if (e.modifiers() & Qt.ControlModifier) and (e.modifiers() & Qt.ShiftModifier) \
                 and e.key() == Qt.Key_C:
             self._copy_selection()
@@ -1042,6 +1045,17 @@ class TerminalPane(QWidget):
             data = b"\r"
         elif e.key() == Qt.Key_Backspace:
             data = b"\x7f"
+        elif e.key() == Qt.Key_Escape:
+            # Esc belongs to the running app (vim, less, fzf, agent TUIs).
+            # Lace's window-wide "close sidebar" Esc binding is disabled in
+            # KilimWindow, so the key arrives here (see _init_inner).
+            data = b"\x1b"
+        elif e.key() == Qt.Key_Tab:
+            # Plain Tab is a tab character; Shift+Tab is CBT (back-tab),
+            # which is what TUIs expect for backwards navigation.
+            data = b"\x1b[Z" if e.modifiers() & Qt.ShiftModifier else b"\t"
+        elif e.key() == Qt.Key_Backtab:
+            data = b"\x1b[Z"
         elif (seq := _arrow_seq(e.key(), app_cursor)) is not None:
             data = seq
         elif e.modifiers() & Qt.ControlModifier and t:
@@ -1049,12 +1063,16 @@ class TerminalPane(QWidget):
         elif t:
             data = t.encode("utf-8", "replace")
         if data:
-            self._follow = True  # typing snaps back to the live tail
-            self._sel = None  # ...and clears the selection, like a terminal
-            if self.view.textCursor().hasSelection():
-                self.view.setTextCursor(QTextCursor(self.view.document()))
-            self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
+            self._send(data)
         # read-only widget: swallow (no super() call)
+
+    def _send(self, data: bytes):
+        """Forward input to the shell, snapping back to the live tail."""
+        self._follow = True  # typing snaps back to the live tail
+        self._sel = None  # ...and clears the selection, like a terminal
+        if self.view.textCursor().hasSelection():
+            self.view.setTextCursor(QTextCursor(self.view.document()))
+        self.bridge.submit(lambda: self.bridge.core.write_term(self.pane_id, data))
 
 
 class FilePane(QPlainTextEdit):
@@ -1433,6 +1451,15 @@ class KilimWindow(FramelessLaceMainWindow):
         from lace import TitleBarMode
 
         self.manager.title_bar_mode = TitleBarMode.custom
+        # Esc must reach the focused terminal, but Lace's sidebar handler
+        # binds a *window-wide* Esc ("close sidebar") that swallows it before
+        # any pane sees it — and with a second same-key shortcut Qt reports
+        # both as ambiguous and neither fires. Kilim disables the sidebar
+        # binding; sidebars keep their close button and the Views menu.
+        try:
+            self.manager.sidebar_manager._keyboard._shortcuts["Escape"].setEnabled(False)
+        except (AttributeError, KeyError, RuntimeError):
+            pass  # Lace without that binding (or a future public API)
         # Explicit, after the manager: keeps the title bar on top.
         self.setCentralWidget(self.manager._root)
         # Both sidebars exist from the start: title-bar pin buttons appear

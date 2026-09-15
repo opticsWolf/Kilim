@@ -863,3 +863,112 @@ def test_floats_use_custom_chrome():
     finally:
         w.close()
         app.processEvents()
+
+
+def _submitted_bytes(coro):
+    """The bytes argument a `submit(lambda: ...write_term(pid, data))` closed over."""
+    for cell in getattr(coro, "__closure__", None) or ():
+        value = cell.cell_contents
+        if isinstance(value, bytes):
+            return value
+    return None
+
+
+def test_escape_reaches_the_shell():
+    """Esc is the running app's key (vim, fzf, agent TUIs), not a Kilim
+    shortcut: the byte reaches the shell — while still clearing the
+    selection and snapping back to the live tail, like any keypress."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QTextCursor
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._poller.stop()
+        term._render(_fake_snap([["abcdef"]], cursor=(0, 0)))
+        # Active selection + scrolled-back view: Esc clears both.
+        cur = term.view.textCursor()
+        cur.movePosition(QTextCursor.Start)
+        cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 3)
+        term.view.setTextCursor(cur)
+        term._sel = ((0, 0), (0, 3))
+        term._follow = False
+
+        sent = []
+        real_submit = term.bridge.submit
+        term.bridge.submit = lambda make_coro: sent.append(_submitted_bytes(make_coro))
+        try:
+            term.on_key(_key(Qt.Key_Escape))
+        finally:
+            term.bridge.submit = real_submit
+
+        assert sent == [b"\x1b"], sent  # the app got its Esc
+        assert not term.view.textCursor().hasSelection()
+        assert term._sel is None
+        assert term._follow is True
+
+        # Return, Backspace, Tab and Shift+Tab forward their own bytes.
+        sent.clear()
+        term.bridge.submit = lambda make_coro: sent.append(_submitted_bytes(make_coro))
+        try:
+            term.on_key(_key(Qt.Key_Return))
+            term.on_key(_key(Qt.Key_Backspace))
+            term.on_key(_key(Qt.Key_Tab))
+            term.on_key(_key(Qt.Key_Backtab))
+        finally:
+            term.bridge.submit = real_submit
+        assert sent == [b"\r", b"\x7f", b"\t", b"\x1b[Z"], sent
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_escape_and_tab_reach_the_terminal_through_qt():
+    """The real Qt path: Escape must not be stolen by Lace's window-wide
+    "close sidebar" binding, and Tab/Backtab must not be swallowed by Qt's
+    focus navigation — the focused terminal gets 0x1b / 0x09 / ESC[Z."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._poller.stop()
+        term.view.setFocus()
+        app.processEvents()
+
+        # Tab/Backtab are the terminal's: Qt hands them to keyPressEvent.
+        assert term.view.focusNextPrevChild(True) is False
+        # Lace's sidebar Esc binding is turned off (it used to eat the key,
+        # and a second same-key shortcut made both ambiguous).
+        sidebar_esc = w.manager.sidebar_manager._keyboard._shortcuts["Escape"]
+        assert sidebar_esc.isEnabled() is False
+
+        stolen = []
+        w.manager.sidebar_manager._keyboard.close_current.connect(
+            lambda: stolen.append(1)
+        )
+        sent = []
+        real_submit = term.bridge.submit
+        term.bridge.submit = lambda make_coro: sent.append(_submitted_bytes(make_coro))
+        try:
+            cases = [
+                (Qt.Key_Escape, Qt.NoModifier, b"\x1b"),
+                (Qt.Key_Tab, Qt.NoModifier, b"\t"),
+                (Qt.Key_Backtab, Qt.ShiftModifier, b"\x1b[Z"),
+                (Qt.Key_Tab, Qt.ShiftModifier, b"\x1b[Z"),
+            ]
+            for key, mods, expected in cases:
+                sent.clear()
+                QApplication.sendEvent(
+                    term.view, QKeyEvent(QEvent.Type.KeyPress, key, mods, "")
+                )
+                app.processEvents()
+                assert sent == [expected], (key, sent)
+        finally:
+            term.bridge.submit = real_submit
+        assert stolen == [], "Lace's sidebar Esc handler took the key"
+    finally:
+        w.close()
+        app.processEvents()
