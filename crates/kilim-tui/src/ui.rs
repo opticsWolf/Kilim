@@ -126,6 +126,13 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
             let theme_bg = kilim_core::highlight::ThemeRegistry::background(theme_name)
                 .map(|h| parse_hex(&h))
                 .unwrap_or(Color::Reset);
+            // Themes → Code → Blend: tool-painted blocks mixed toward the
+            // theme (shared flag, so both surfaces blend alike).
+            let blend = if app.session.layout.code_blend {
+                kilim_core::BLEND_WEIGHT
+            } else {
+                0.0
+            };
             let total = screen.total_lines();
             let vis_h = inner.height as usize;
             let vis_w = inner.width as usize;
@@ -143,7 +150,7 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
                         row.iter()
                             .enumerate()
                             .map(|(ci, (text, fg, bg, attrs))| {
-                                let mut sp = term_cell_span(text, fg, bg, *attrs, theme_fg, theme_bg);
+                                let mut sp = term_cell_span(text, fg, bg, *attrs, theme_fg, theme_bg, blend);
                                 // Soft cursor: reverse the cell under the cursor.
                                 if cursor_here && cy_abs - start == ri && cx == ci {
                                     sp.style = sp.style.add_modifier(Modifier::REVERSED);
@@ -226,6 +233,10 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
 /// One pty cell -> Span, themed: `Reset` sides (shell "default") take
 /// the theme fg/bg so the shell view follows theme switches.
 /// Resolved AFTER reverse-swap, so reversed defaults theme correctly.
+///
+/// `blend` (0 = off) mixes explicit **RGB** cells toward the theme's
+/// ink/paper (Themes → Code → Blend). Named ANSI colors stay untouched:
+/// the host terminal maps those, so there is no fixed RGB to blend.
 fn term_cell_span<'a>(
     text: &'a str,
     fg: &str,
@@ -233,6 +244,7 @@ fn term_cell_span<'a>(
     attrs: u8,
     theme_fg: Color,
     theme_bg: Color,
+    blend: f32,
 ) -> Span<'a> {
     let mut sp = cell_span(text, fg, bg, attrs);
     if sp.style.fg == Some(Color::Reset) {
@@ -241,7 +253,26 @@ fn term_cell_span<'a>(
     if sp.style.bg == Some(Color::Reset) {
         sp.style.bg = Some(theme_bg);
     }
+    if blend > 0.0 {
+        if let (Some(cell_fg), Some(cell_bg), Some(ink), Some(paper)) = (
+            rgb(sp.style.fg),
+            rgb(sp.style.bg),
+            rgb(Some(theme_fg)),
+            rgb(Some(theme_bg)),
+        ) {
+            let (f, b) = kilim_core::blend_cell(cell_fg, cell_bg, ink, paper, blend);
+            sp.style.fg = Some(Color::Rgb(f.r, f.g, f.b));
+            sp.style.bg = Some(Color::Rgb(b.r, b.g, b.b));
+        }
+    }
     sp
+}
+
+fn rgb(c: Option<Color>) -> Option<kilim_core::Rgb> {
+    match c {
+        Some(Color::Rgb(r, g, b)) => Some(kilim_core::Rgb::new(r, g, b)),
+        _ => None,
+    }
 }
 
 /// One stitch-pty cell -> ratatui Span.
@@ -482,18 +513,50 @@ mod live_tests {
 
         let fg = Color::Rgb(0xCB, 0xD0, 0xDC); // Kilim Midnight text
         let bg = Color::Rgb(0x10, 0x13, 0x19); // Kilim Midnight paper
-        let sp = term_cell_span("x", "default", "default", 0, fg, bg);
+        let sp = term_cell_span("x", "default", "default", 0, fg, bg, 0.0);
         assert_eq!(sp.style.fg, Some(fg));
         assert_eq!(sp.style.bg, Some(bg));
         // Explicit colors survive; empty counts as default.
-        let sp = term_cell_span("y", "red", "", 0, fg, bg);
+        let sp = term_cell_span("y", "red", "", 0, fg, bg, 0.0);
         assert_eq!(sp.style.fg, Some(Color::Red));
         assert_eq!(sp.style.bg, Some(bg));
         // Reversed defaults resolve on the swapped sides (real-terminal
         // semantics: reverse of default-on-red is red-on-default).
-        let sp = term_cell_span("z", "default", "red", 1 << 5, fg, bg);
+        let sp = term_cell_span("z", "default", "red", 1 << 5, fg, bg, 0.0);
         assert_eq!(sp.style.fg, Some(Color::Red));
         assert_eq!(sp.style.bg, Some(bg));
+    }
+
+    #[test]
+    fn term_blend_mixes_rgb_cells_toward_the_theme() {
+        use ratatui::style::Color;
+
+        use super::term_cell_span;
+
+        let ink = Color::Rgb(0xCB, 0xD0, 0xDC);
+        let paper = Color::Rgb(0x10, 0x13, 0x19);
+        let chip_fg = "#ffffff";
+        let chip_bg = "#000000";
+        // Off: byte-exact passthrough.
+        let sp = term_cell_span("x", chip_fg, chip_bg, 0, ink, paper, 0.0);
+        assert_eq!(sp.style.fg, Some(Color::Rgb(0xff, 0xff, 0xff)));
+        assert_eq!(sp.style.bg, Some(Color::Rgb(0, 0, 0)));
+        // On: pulled toward the theme, still legible.
+        let sp = term_cell_span("x", chip_fg, chip_bg, 0, ink, paper, kilim_core::BLEND_WEIGHT);
+        let (Some(Color::Rgb(fr, fg_, fb)), Some(Color::Rgb(br, bg_, bb))) =
+            (sp.style.fg, sp.style.bg)
+        else {
+            panic!("blended cell is not RGB: {:?}", sp.style);
+        };
+        assert_ne!((fr, fg_, fb), (0xff, 0xff, 0xff));
+        assert_ne!((br, bg_, bb), (0, 0, 0));
+        let f = kilim_core::Rgb::new(fr, fg_, fb);
+        let b = kilim_core::Rgb::new(br, bg_, bb);
+        assert!(f.contrast(b) >= 3.0, "blend broke contrast: {f:?} {b:?}");
+        // Named ANSI colors stay host-mapped (nothing to blend).
+        let sp = term_cell_span("x", "red", "blue", 0, ink, paper, kilim_core::BLEND_WEIGHT);
+        assert_eq!(sp.style.fg, Some(Color::Red));
+        assert_eq!(sp.style.bg, Some(Color::Blue));
     }
 
     /// Draw small, sync, draw big, sync: committed dims track the

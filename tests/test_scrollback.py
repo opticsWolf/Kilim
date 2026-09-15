@@ -316,11 +316,20 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         assert "&Themes" in menus, sorted(menus)
         subs = {a.text(): a.menu() for a in menus["&Themes"].actions() if a.menu()}
         assert "Code (Qt + TUI)" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
-        code_actions = {a.text(): a for a in subs["Code (Qt + TUI)"].actions()}
-        md_actions = {a.text(): a for a in subs["Markdown"].actions()}
-        # One shared ten: code + markdown lists match, no Pin menu.
+        md_actions = {a.text(): a for a in subs["Markdown"].actions() if not a.isSeparator()}
+        code_actions = {
+            a.text(): a
+            for a in subs["Code (Qt + TUI)"].actions()
+            if a.text() in md_actions
+        }
+        # One shared ten: code + markdown lists match, no Pin menu. (The
+        # Code submenu also carries the checkable Blend toggle.)
         assert sorted(code_actions) == sorted(md_actions), "code/md lists diverged"
         assert len(code_actions) == 10
+        assert any(
+            a.text() == "Blend" and a.isCheckable()
+            for a in subs["Code (Qt + TUI)"].actions()
+        ), "Blend toggle missing from the Code submenu"
         assert "&Pin" not in menus
         code_actions["Kilim Warm"].trigger()
         assert w.bridge.core.theme() == "Kilim Warm"

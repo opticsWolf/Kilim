@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.0: Themes — Code — Blend — tool-painted terminal color blocks (agents like pi, linter highlights) mix into the active code theme: backgrounds toward its paper, text toward its ink, with a WCAG contrast floor and a polarity guard so a dark chip on a light theme stays readable. The flag persists in the layout file so the TUI blends identically (RGB cells; the TUI leaves named ANSI colors to the host terminal). Math lives in kilim_core::color with a Python bridge for the Qt renderer, cached per color pair.
 - v0.3.3: the Window menu is gone from the title bar — its Minimize / Toggle Maximize entries duplicated the window buttons next to it; the bar is now Views / Files / Terminal / Themes.
 - v0.3.2: viewer text decoding — panes read through a BOM-aware reader with a cp1252 fallback, so a text file binaryornot-rs accepts opens whatever its encoding (a cp1252 markdown raised "stream did not contain valid UTF-8"); the html pane reads through the same path. Also: a fresh launch no longer rewrites the shared layout file (persist=False gates both files), which keeps the default layout untouched and stops parallel test windows racing on it.
 - v0.3.1: second viewer dock fix — tabifying a click-opened dock used a DockWidget as Lace's target (which expects a DockAreaWidget), so opening a second, different file raised AttributeError; the viewer group area is now tracked and the regression test opens two files.

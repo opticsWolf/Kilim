@@ -125,6 +125,36 @@ impl CoreSession {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 
+    /// Themes → Code → Blend state (shared with the TUI via the layout).
+    fn code_blend(&self) -> bool {
+        self.inner.read().unwrap().layout.code_blend
+    }
+
+    /// Flip blending on/off in the session (the app persists it).
+    fn set_code_blend(&self, on: bool) {
+        self.inner.write().unwrap().layout.code_blend = on;
+    }
+
+    /// Blend a terminal cell's on-screen colors toward the theme
+    /// (`kilim_core::color::blend_cell`): `#rrggbb` in, `#rrggbb` out.
+    /// `weight` 0 returns the inputs unchanged; malformed hex raises.
+    fn blend_cell(
+        &self,
+        fg: &str,
+        bg: &str,
+        theme_fg: &str,
+        theme_bg: &str,
+        weight: f64,
+    ) -> PyResult<(String, String)> {
+        let bad = |s: &str| pyo3::exceptions::PyValueError::new_err(format!("bad color '{s}'"));
+        let fg = kilim_core::Rgb::parse(fg).ok_or_else(|| bad(fg))?;
+        let bg = kilim_core::Rgb::parse(bg).ok_or_else(|| bad(bg))?;
+        let ink = kilim_core::Rgb::parse(theme_fg).ok_or_else(|| bad(theme_fg))?;
+        let paper = kilim_core::Rgb::parse(theme_bg).ok_or_else(|| bad(theme_bg))?;
+        let (f, b) = kilim_core::blend_cell(fg, bg, ink, paper, weight as f32);
+        Ok((f.hex(), b.hex()))
+    }
+
     /// Highlighted file pane as list of rows of (text, fg, bg) tuples for Qt.
     fn highlighted_file(&self, pane_id: &str) -> PyResult<Vec<Vec<(String, String, String)>>> {
         let s = self.inner.read().unwrap();
@@ -473,6 +503,12 @@ pub fn theme_background(name: &str) -> String {
 #[pyfunction]
 pub fn theme_foreground(name: &str) -> String {
     ThemeRegistry::foreground(name).unwrap_or_default()
+}
+
+/// Blend strength behind the Blend toggle (`kilim_core::color`).
+#[pyfunction]
+pub fn blend_weight() -> f64 {
+    kilim_core::BLEND_WEIGHT as f64
 }
 
 /// The four unified Kilim themes as JSON: palette hexes + flags for the

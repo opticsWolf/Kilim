@@ -5,6 +5,7 @@
 //! - `kilim-tui` draws it with ratatui splits/tabs
 //! - `kilim-py` exposes it to Lace as dock areas + perspectives
 
+pub mod color;
 pub mod highlight;
 pub mod kilim_themes;
 pub mod layout;
@@ -13,6 +14,7 @@ pub mod session;
 pub mod shell;
 pub mod term;
 
+pub use color::{blend_cell, Rgb, BLEND_WEIGHT};
 pub use highlight::{StyledSpan, ThemeRegistry};
 pub use layout::{Dir, Layout, Node, Pane, PaneKind, Tab};
 pub use paths::{FileKind, PathHit};

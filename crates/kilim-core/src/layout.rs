@@ -20,6 +20,11 @@ pub struct Layout {
     /// TUI markdown-as-source panes). Split from `theme` in v0.1.24.
     #[serde(default = "default_markdown_theme")]
     pub markdown_theme: String,
+    /// Themes → Code → Blend: mix tool-painted terminal colors (color
+    /// blocks from other apps) toward this theme's paper/ink. Shared, so
+    /// both surfaces blend the same cells the same way.
+    #[serde(default)]
+    pub code_blend: bool,
 }
 
 /// Default code theme: unified Kilim Midnight where available (markdown
@@ -217,6 +222,7 @@ mod tests {
             active: "a".into(),
             theme: default_theme(),
             markdown_theme: default_markdown_theme(),
+            code_blend: false,
         };
         assert_eq!(l.pane_ids(), vec!["a", "b", "c"]);
     }
@@ -247,6 +253,16 @@ mod tests {
             }
             other => panic!("expected a term pane, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn code_blend_defaults_off() {
+        let doc = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t"}, "panes": []}"#;
+        let (l, _) = Layout::from_json(doc).unwrap();
+        assert!(!l.code_blend);
+        let on = doc.replace("\"active\": \"t\"", "\"active\": \"t\", \"code_blend\": true");
+        let (l2, _) = Layout::from_json(&on).unwrap();
+        assert!(l2.code_blend);
     }
 
     #[test]
