@@ -1611,6 +1611,9 @@ class KilimWindow(FramelessLaceMainWindow):
         same way dock chrome does.
         """
         bar = self.statusBar()
+        # No resize grip (QSizeGrip in the corner): the frameless window's own
+        # native edges already resize, and the grip reads as a stray glyph.
+        bar.setSizeGripEnabled(False)
         self._status_pane = QLabel("")
         self._status_theme = QLabel("")
         bar.addPermanentWidget(self._status_pane)

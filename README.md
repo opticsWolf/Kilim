@@ -94,9 +94,10 @@ paths to reopen with one click.
 The Qt window carries a bottom status bar: the hovered link target (browser
 style, transient), then the focused pane (`Terminal · term1`, `File · …`,
 `Preview · …`) and the code theme as permanent widgets. It is a plain
-`QMainWindow` status bar, so the window lays it out itself — there is no
-resize handler in Kilim and Lace's app-wide `DockThemeBridge` themes its
-palette with everything else.
+`QMainWindow` status bar with the corner size grip switched off (the
+frameless window's native edges do the resizing), so the window lays it out
+itself — there is no resize handler in Kilim — and Lace's app-wide
+`DockThemeBridge` themes its palette with everything else.
 
 ## Themes
 

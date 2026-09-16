@@ -1,8 +1,8 @@
 """Qt status bar: focused-pane + theme labels, link hover, geometry.
 
-QMainWindow owns the bar's geometry — that is the point of adding it this
-way: resizing the window needs no resize handler in Kilim, which is what
-the geometry test below pins down."""
+Two things this pins down: no resize *grip* (the corner QSizeGrip the
+frameless window does not need) and no resize *handler* — QMainWindow lays
+the bar out itself, so resizing needs no code in Kilim."""
 
 import pytest
 
@@ -109,13 +109,18 @@ def test_status_bar_names_the_focused_pane_and_theme(scene, tmp_path):
         app.processEvents()
 
 
-def test_status_bar_needs_no_resize_handler(scene):
-    """The bar is full-width and bottom-flush after every resize: QMainWindow
-    Lays it out, so Kilim carries no resizeEvent / eventFilter for it."""
+def test_status_bar_is_laid_out_and_has_no_resize_grip(scene):
+    """No QSizeGrip in the corner, and the bar stays full-width/bottom-flush
+    after every resize — QMainWindow lays it out, so Kilim carries neither a
+    grip nor a resizeEvent / eventFilter for it."""
+    from PySide6.QtWidgets import QSizeGrip
+
     app, w = _window(*scene)
     try:
         _settle(app)
         bar = w.statusBar()
+        assert bar.isSizeGripEnabled() is False
+        assert bar.findChild(QSizeGrip) is None
         for width, height in ((1100, 700), (640, 480), (900, 620)):
             w.resize(width, height)
             _settle(app, 4)
