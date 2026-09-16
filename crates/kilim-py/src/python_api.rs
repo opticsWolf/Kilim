@@ -186,6 +186,17 @@ impl CoreSession {
         })
     }
 
+    /// Override a term pane's start directory (Qt sidecar restore stamps
+    /// the per-shell choice before ensure_terms spawns; restart_term
+    /// keeps it). Synchronous: it only mutates the pane inventory.
+    fn set_pane_cwd(&self, pane_id: String, cwd: String) -> PyResult<()> {
+        self.inner
+            .write()
+            .unwrap()
+            .set_pane_cwd(&pane_id, &cwd)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
     /// Kill (if alive) and respawn one term pane.
     fn restart_term<'py>(&self, py: Python<'py>, pane_id: String) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();

@@ -58,6 +58,23 @@ impl Session {
         Ok(())
     }
 
+    /// Override a term pane's start directory (Qt sidecar restore).
+    ///
+    /// Per-shell start dirs live in the machine-local sidecar, outside
+    /// the shared layout — so Python stamps the resolved dir onto the
+    /// pane spec before `ensure_terms` spawns it, and `restart_term`
+    /// keeps it afterwards. Empty/whitespace clears back to inherit.
+    pub fn set_pane_cwd(&mut self, pane_id: &str, cwd: &str) -> Result<(), String> {
+        let pane = self.panes.get_mut(pane_id).ok_or_else(|| format!("unknown pane '{pane_id}'"))?;
+        match &mut pane.kind {
+            PaneKind::Term { cwd: slot, .. } => {
+                *slot = cwd.to_string();
+                Ok(())
+            }
+            _ => Err(format!("pane '{pane_id}' is not a term")),
+        }
+    }
+
     /// Kill (if alive) and respawn one term pane.
     pub async fn restart_term(&mut self, pane_id: &str) -> Result<(), String> {
         let pane = self.panes.get(pane_id).ok_or_else(|| format!("unknown pane '{pane_id}'"))?;
@@ -600,5 +617,39 @@ mod markdown_tests {
         let s = Session::from_json(&doc_with_md(&md.to_string_lossy().replace('\\', "/"))).unwrap();
         let html = s.markdown_html("notes").unwrap();
         assert!(html.contains("katex"), "expected KaTeX math, got: {html}");
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::Session;
+    use crate::layout::PaneKind;
+
+    fn doc() -> String {
+        r#"{"layout": {"root": {"type": "pane", "pane_id": "t1"}, "active": "t1", "theme": "Kilim Midnight"}, "panes": [{"id": "t1", "title": "sh", "kind": "term"}, {"id": "f1", "title": "code", "kind": "file", "path": "x.rs"}]}"#.to_string()
+    }
+
+    fn cwd_of(s: &Session, pid: &str) -> String {
+        match &s.panes[pid].kind {
+            PaneKind::Term { cwd, .. } => cwd.clone(),
+            _ => panic!("expected a term pane"),
+        }
+    }
+
+    #[test]
+    fn set_pane_cwd_stamps_term_pane() {
+        let mut s = Session::from_json(&doc()).unwrap();
+        assert_eq!(cwd_of(&s, "t1"), "");
+        s.set_pane_cwd("t1", "/tmp/work").unwrap();
+        assert_eq!(cwd_of(&s, "t1"), "/tmp/work");
+        s.set_pane_cwd("t1", "").unwrap();
+        assert_eq!(cwd_of(&s, "t1"), "");
+    }
+
+    #[test]
+    fn set_pane_cwd_rejects_unknown_and_non_term() {
+        let mut s = Session::from_json(&doc()).unwrap();
+        assert!(s.set_pane_cwd("nope", "/x").is_err());
+        assert!(s.set_pane_cwd("f1", "/x").is_err());
     }
 }

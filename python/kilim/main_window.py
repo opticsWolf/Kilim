@@ -41,8 +41,30 @@ class KilimWindow(FramelessLaceMainWindow):
     def _init_inner(self, layout_path, perspective_path, DockManager, DockWidget, DockWidgetArea):
         doc = Path(layout_path).read_text(encoding="utf-8")
         self.layout_path = str(layout_path)
-        self.perspective_path = perspective_path
+        # Sidecar path first: per-shell start dirs must be known before
+        # the bridge spawns the layout terms below (ensure_terms), which
+        # runs long before the session-extras restore further down.
+        self.perspective_path = perspective_path or str(
+            perspectives.sidecar_for(layout_path)
+        )
+        import json as _json
+
+        try:
+            _side = _json.loads(Path(self.perspective_path).read_text(encoding="utf-8"))
+            _cwds = _side.get("shell_cwds") if isinstance(_side, dict) else None
+        except (OSError, ValueError):
+            _cwds = None
+        # Machine-local paths: sidecar, never the shared layout. Values
+        # are {mode, dir} specs (plain strings = v0.4.12 customs).
+        self.shell_cwds = (
+            {str(k): v for k, v in _cwds.items() if isinstance(v, (dict, str))}
+            if isinstance(_cwds, dict)
+            else {}
+        )
+        raw = _json.loads(doc)
+        panes = {p["id"]: p for p in raw["panes"]}
         self.bridge = Bridge(doc)
+        self._stamp_layout_cwds(panes)
         self.bridge.call(lambda: self.bridge.core.ensure_terms())
         self.setWindowTitle("Kilim")
         self.resize(1200, 800)
@@ -77,15 +99,13 @@ class KilimWindow(FramelessLaceMainWindow):
         self._kilim_by_lace = register_kilim_lace_themes()
         self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "syntax": {}, "terminal": {}}
         self.file_history: list[str] = []  # viewer files, newest first
-        self.shell_cwds: dict = {}  # shell label -> {mode, dir} (see _shell_dir_spec)
+        # self.shell_cwds loaded pre-spawn from the sidecar (see _init_inner head).
         self.default_shell: tuple[str, str, list[str]] | None = None
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
         self._viewer_area = None  # viewer tab group's DockAreaWidget
 
         import json
 
-        raw = json.loads(doc)
-        panes = {p["id"]: p for p in raw["panes"]}
         InitialActive = raw["layout"].get("active", "")
         self._active = InitialActive
         # Terminals theme separately (Themes menu); layouts predating the
@@ -155,14 +175,7 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.default_shell = entry
         if self.default_shell is None:
             self.default_shell = shells.default_entry()
-        shell_cwds = saved.get("shell_cwds")
-        if isinstance(shell_cwds, dict):
-            # Machine-local paths: sidecar, never the shared layout.
-            # Values are {mode, dir} specs (plain strings = v0.4.12 customs).
-            self.shell_cwds = {
-                str(k): v for k, v in shell_cwds.items()
-                if isinstance(v, (dict, str))
-            }
+        # (shell_cwds loaded pre-spawn above; extras below must not reset it.)
         history = saved.get("file_history")
         if isinstance(history, list):
             self.file_history = [p for p in history if isinstance(p, str)]
@@ -437,6 +450,55 @@ class KilimWindow(FramelessLaceMainWindow):
             none = start.addAction("No shells found")
             none.setEnabled(False)
 
+    def _stamp_layout_cwds(self, panes: dict) -> None:
+        """Stamp sidecar start dirs onto layout term panes (pre-spawn).
+
+        ensure_terms spawns each layout term with its spec cwd — stamping
+        the resolved per-shell dir first is what makes a custom Start
+        Directory survive an app restart. Panes whose shell has no
+        custom/home choice keep the layout cwd (usually inherit). A
+        custom dir that no longer exists falls back to App default
+        (inherit), never a broken start dir."""
+        for pid, p in panes.items():
+            if not isinstance(p, dict) or p.get("kind") != "term":
+                continue
+            label = self._resolve_shell_label(p)
+            if label is None:
+                continue
+            cwd = self._shell_cwd_arg(label)
+            if cwd:
+                try:
+                    self.bridge.core.set_pane_cwd(pid, cwd)
+                except Exception:  # noqa: BLE001 - spawn falls back to layout cwd
+                    pass
+
+    @staticmethod
+    def _resolve_shell_label(pane: dict) -> str | None:
+        """Layout term pane -> `shells` menu label (title, then cmd).
+
+        Titles are free text ("shell", "logs"...), so an exact title
+        hit wins and the pane cmd's basename decides the rest — layouts
+        stay portable, no new keys."""
+        from kilim import shells
+
+        entries = shells.find_shells()
+        title = str(pane.get("title") or "")
+        for label, _cmd, _args in entries:
+            if title == label:
+                return label
+
+        def _base(cmd: str) -> str:
+            base = cmd.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            return base[:-4] if base.endswith(".exe") else base
+
+        want = _base(str(pane.get("cmd") or ""))
+        if not want:
+            return None
+        for label, scmd, _args in entries:
+            if _base(scmd) == want:
+                return label
+        return None
+
     def _shell_dir_spec(self, label: str) -> dict:
         """Normalized start-dir spec: {mode, dir} (app/home/custom)."""
         raw = self.shell_cwds.get(label)
@@ -451,14 +513,24 @@ class KilimWindow(FramelessLaceMainWindow):
         return {"mode": "app", "dir": ""}
 
     def _shell_cwd_arg(self, label: str) -> str | None:
-        """Resolved cwd for spawn (None = inherit the app directory)."""
+        """Resolved cwd for spawn (None = App default: inherit).
+
+        A custom dir that no longer exists (deleted folder, stale
+        sidecar, unplugged drive) falls back to App default too — the
+        core re-checks at spawn (expand_cwd: missing inherits), so this
+        is the honest-frontend half of the same rule."""
         from pathlib import Path
 
         spec = self._shell_dir_spec(label)
         if spec["mode"] == "home":
-            return str(Path.home())
+            home = str(Path.home())
+            return home if Path(home).is_dir() else None
         if spec["mode"] == "custom":
-            return spec["dir"] or None
+            picked = (spec["dir"] or "").strip()
+            # The core expands `~` at spawn; expand here only to test.
+            if picked and Path(picked).expanduser().is_dir():
+                return picked
+            return None
         return None
 
     def set_shell_dir_mode(self, label: str, mode: str) -> None:

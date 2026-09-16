@@ -1461,3 +1461,133 @@ def test_escape_and_tab_reach_the_terminal_through_qt():
     finally:
         w.close()
         app.processEvents()
+
+
+def _custom_window(tmp_path, panes, shell_cwds):
+    """KilimWindow on a synthetic layout + pre-seeded sidecar.
+
+    Models an app restart: the sidecar already holds per-shell Start
+    Directories from a previous session. Absolute paths, so nothing
+    touches the repo's layouts."""
+    import json
+    from pathlib import Path as _Path
+
+    from PySide6.QtWidgets import QApplication
+
+    from kilim.qt_app import KilimWindow
+
+    base = json.loads(_Path("layouts/default.json").read_text(encoding="utf-8"))
+    base["panes"] = panes
+    layout_path = tmp_path / "k.json"
+    layout_path.write_text(json.dumps(base), encoding="utf-8")
+    sidecar_path = tmp_path / "k.perspective.json"
+    sidecar_path.write_text(json.dumps({"shell_cwds": shell_cwds}), encoding="utf-8")
+    app = QApplication.instance() or QApplication([])
+    w = KilimWindow(str(layout_path), str(sidecar_path))
+    w.show()
+    return app, w
+
+
+def _probe_pane(label):
+    """Layout term pane that prints its own cwd, then idles."""
+    import sys
+
+    script = "import os, time; print('CWD:' + os.getcwd(), flush=True); time.sleep(60)"
+    return {
+        "id": "term1", "title": label, "kind": "term",
+        "cmd": sys.executable, "args": ["-c", script],
+        "rows": 24, "cols": 80, "scrollback": 500,
+    }
+
+
+def _wait_printed_cwd(app, term, pid="term1", timeout=30.0):
+    """Poll the pane until the probe's CWD: line shows; return the path.
+
+    Anchored at history 0 with a wide window: the pane poller may have
+    grown the pty past the probe's single line, and a tail snapshot
+    would then show only blanks. Long paths wrap past the viewport
+    width, so rows are reassembled (wrapping splits nothing)."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.2)
+        snap = term.bridge.call(lambda: term.bridge.core.snapshot_term(pid, 200, 0))
+        text = "".join("".join(c[0] for c in row).rstrip() for row in snap[2])
+        if "CWD:" in text:
+            after = text.split("CWD:", 1)[1]
+            # The probe prints exactly one line: the path runs to the end
+            # of the viewport text (later rows are blank padding).
+            return after.strip()
+    raise AssertionError("probe never printed its cwd")
+
+
+def test_layout_term_restores_custom_start_dir(tmp_path):
+    """Restart: a layout term spawns in its shell's Start Directory."""
+    import os
+
+    from kilim import shells
+
+    entries = shells.find_shells()
+    assert entries, "expected at least one shell on this machine"
+    label = entries[0][0]
+    work = tmp_path / "work"
+    work.mkdir()
+    app, w = _custom_window(
+        tmp_path, [_probe_pane(label)],
+        {label: {"mode": "custom", "dir": str(work)}},
+    )
+    try:
+        assert w.shell_cwds.get(label) == {"mode": "custom", "dir": str(work)}
+        assert w._shell_cwd_arg(label) == str(work)
+        printed = _wait_printed_cwd(app, _term(w))
+        assert os.path.normcase(printed) == os.path.normcase(str(work))
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_layout_term_missing_start_dir_inherits_app_default(tmp_path):
+    """Restart: a Start Directory that no longer exists -> App default."""
+    import os
+
+    from kilim import shells
+
+    entries = shells.find_shells()
+    assert entries, "expected at least one shell on this machine"
+    label = entries[0][0]
+    app, w = _custom_window(
+        tmp_path, [_probe_pane(label)],
+        {label: {"mode": "custom", "dir": str(tmp_path / "deleted")}},
+    )
+    try:
+        assert w._shell_cwd_arg(label) is None
+        printed = _wait_printed_cwd(app, _term(w))
+        assert os.path.normcase(printed) == os.path.normcase(os.getcwd())
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_resolve_shell_label_and_missing_fallback(tmp_path):
+    """Pane->label matching (title, then cmd); missing dirs fall back."""
+    from kilim import shells
+
+    app, w = _window()
+    try:
+        entries = shells.find_shells()
+        assert entries, "expected at least one shell on this machine"
+        label, cmd, _args = entries[0]
+        assert w._resolve_shell_label({"title": label, "kind": "term"}) == label
+        assert w._resolve_shell_label(
+            {"title": "unrelated", "cmd": cmd, "kind": "term"}
+        ) == label
+        assert w._resolve_shell_label({"title": "unrelated", "kind": "term"}) is None
+        w.shell_cwds[label] = {"mode": "custom", "dir": str(tmp_path / "nope")}
+        assert w._shell_cwd_arg(label) is None
+        w.shell_cwds[label] = {"mode": "custom", "dir": str(tmp_path)}
+        assert w._shell_cwd_arg(label) == str(tmp_path)
+    finally:
+        w.close()
+        app.processEvents()
