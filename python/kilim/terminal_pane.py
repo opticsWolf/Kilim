@@ -392,6 +392,8 @@ class TerminalPane(QWidget):
             not self._force_full
             and self._paint_rows == snap["rows"]
             and self._paint_start == snap["start"]
+            and self._paint_cols is not None
+            and cols == self._paint_cols
         ):
             vis = sorted(r - lo for r in snap.get("dirty") or [] if lo <= r < lo + n)
             if vis:

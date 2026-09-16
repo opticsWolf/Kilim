@@ -727,6 +727,50 @@ def test_resize_retry_on_failure():
         app.processEvents()
 
 
+def test_width_only_resize_rebuilds_and_tracks_cols():
+    """Width-only rescale: one rebuild per settle, cols bookkeeping tracks.
+
+    Regression: the same-window fast path matched on rows+start alone,
+    so the second width-only resize never rebuilt — paint_cols rotted
+    and shift surgery stayed disabled (every later move paid a full).
+    """
+    import time
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        for _ in range(8):
+            app.processEvents()
+            time.sleep(0.06)
+        rows0, cols0 = term._applied_grid
+
+        def settle_width(width, timeout=6.0):
+            _, before = term._applied_grid
+            w.resize(width, 800)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.06)
+                grid = term._applied_grid
+                if grid[1] != before and grid[0] == rows0:
+                    # Settled on the new width: let the rebuild land.
+                    for _ in range(4):
+                        app.processEvents()
+                        time.sleep(0.06)
+                    return term._applied_grid
+            raise AssertionError("width never settled")
+
+        grid = settle_width(1600)
+        assert term._paint_cols == grid[1], (term._paint_cols, grid)
+        assert term._paint_rows == rows0
+        grid = settle_width(1100)
+        assert term._paint_cols == grid[1], (term._paint_cols, grid)
+        assert term._paint_rows == rows0
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_resize_jump_applies_immediately():
     """A discrete grid jump (maximize/snap) applies on the first poll.
 
@@ -1241,16 +1285,18 @@ def test_scroll_back_and_height_resize_shift_without_rebuild():
             ]
             assert doc.blockCount() == 3
             assert term._render_count == base + 3
-            # Width change, same shape: subset repaints the dirty rows
-            # with the reshaped cells (no rebuild needed, count matches).
+            # Width change, same shape: cells reshaped — only a full
+            # rebuild lines those up and re-syncs the width
+            # bookkeeping (a subset would leave paint_cols rotted and
+            # shift surgery disabled for every later move).
             term._render(_fake_snap([["CC"], ["DD"]], start=2, total=4,
                                      cols=120, dirty=[2, 3]))
-            assert full.call_count == 0
+            assert full.call_count == 1
             assert [doc.findBlockByNumber(i).text() for i in range(2)] == [
                 "CC", "DD",
             ]
-            # Width change plus new shape: cells reshaped and the block
-            # count moved — only a full rebuild lines those up.
+            # Width change plus new shape, same width: shift surgery
+            # appends the fresh row (no second rebuild).
             term._render(_fake_snap([["CC"], ["DD"], ["EE"]], start=2,
                                      total=5, cols=120, dirty=[2, 3, 4]))
             assert full.call_count == 1
