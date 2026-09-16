@@ -36,23 +36,23 @@ impl Session {
     /// Spawn every Term pane without a *live* handle. Dead handles are
     /// replaced, so this doubles as "restart dead panes" (TUI: Ctrl+R).
     pub async fn ensure_terms(&mut self) -> Result<(), String> {
-        let jobs: Vec<(String, String, Vec<String>, u16, u16, usize)> = self
+        let jobs: Vec<(String, String, Vec<String>, u16, u16, usize, String)> = self
             .panes
             .iter()
             .filter_map(|(id, pane)| match &pane.kind {
-                PaneKind::Term { cmd, args, rows, cols, scrollback } => {
+                PaneKind::Term { cmd, args, rows, cols, scrollback, cwd } => {
                     let live = self.terms.get(id).map(|h| h.is_alive()).unwrap_or(false);
                     if live {
                         None
                     } else {
-                        Some((id.clone(), cmd.clone(), args.clone(), *rows, *cols, *scrollback))
+                        Some((id.clone(), cmd.clone(), args.clone(), *rows, *cols, *scrollback, cwd.clone()))
                     }
                 }
                 _ => None,
             })
             .collect();
-        for (id, cmd, args, rows, cols, scrollback) in jobs {
-            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback).await?;
+        for (id, cmd, args, rows, cols, scrollback, cwd) in jobs {
+            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, Some(cwd.as_str())).await?;
             self.terms.insert(id, h);
         }
         Ok(())
@@ -61,16 +61,16 @@ impl Session {
     /// Kill (if alive) and respawn one term pane.
     pub async fn restart_term(&mut self, pane_id: &str) -> Result<(), String> {
         let pane = self.panes.get(pane_id).ok_or_else(|| format!("unknown pane '{pane_id}'"))?;
-        let (cmd, args, rows, cols, scrollback) = match &pane.kind {
-            PaneKind::Term { cmd, args, rows, cols, scrollback } => {
-                (cmd.clone(), args.clone(), *rows, *cols, *scrollback)
+        let (cmd, args, rows, cols, scrollback, cwd) = match &pane.kind {
+            PaneKind::Term { cmd, args, rows, cols, scrollback, cwd } => {
+                (cmd.clone(), args.clone(), *rows, *cols, *scrollback, cwd.clone())
             }
             _ => return Err(format!("pane '{pane_id}' is not a term")),
         };
         if let Some(h) = self.terms.remove(pane_id) {
             h.terminate(1.0).await;
         }
-        let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback).await?;
+        let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, Some(cwd.as_str())).await?;
         self.terms.insert(pane_id.to_string(), h);
         Ok(())
     }
@@ -96,9 +96,10 @@ impl Session {
         rows: u16,
         cols: u16,
         scrollback: usize,
+        cwd: Option<String>,
     ) -> Result<(), String> {
-        let (cmd, args) = self.insert_term_pane(pane_id, title, cmd, args, rows, cols, scrollback)?;
-        let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback).await?;
+        let (cmd, args) = self.insert_term_pane(pane_id, title, cmd, args, rows, cols, scrollback, cwd.clone())?;
+        let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, cwd.as_deref()).await?;
         self.terms.insert(pane_id.to_string(), h);
         Ok(())
     }
@@ -114,6 +115,7 @@ impl Session {
         rows: u16,
         cols: u16,
         scrollback: usize,
+        cwd: Option<String>,
     ) -> Result<(String, Vec<String>), String> {
         self.splice_pane(Pane {
             id: pane_id.to_string(),
@@ -124,6 +126,7 @@ impl Session {
                 rows,
                 cols,
                 scrollback,
+                cwd: cwd.unwrap_or_default(),
             },
         })?;
         Ok((cmd.to_string(), args.to_vec()))
@@ -506,8 +509,22 @@ mod markdown_tests {
     }
 
     #[test]
-    fn fences_follow_markdown_theme_not_code_theme() {
-        let dir = std::env::temp_dir().join("kilim-md-test");
+    fn insert_term_pane_stores_cwd_for_restarts() {
+        // The stored spec carries cwd so ensure/restart respawn there too.
+        let doc = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t", "theme": "Kilim Midnight"}, "panes": [{"id": "t", "title": "t", "kind": "term", "cmd": "sh"}]}"#;
+        let mut s = Session::from_json(doc).unwrap();
+        s.insert_term_pane("n", "n", "sh", &[], 24, 80, 5000, Some("/tmp/work".into())).unwrap();
+        match &s.panes["n"].kind {
+            crate::layout::PaneKind::Term { cwd, .. } => assert_eq!(cwd, "/tmp/work"),
+            other => panic!("expected term pane, got {other:?}"),
+        }
+        // Omitted cwd stores empty = inherit, like layout files omit it.
+        s.insert_term_pane("m", "m", "sh", &[], 24, 80, 5000, None).unwrap();
+        assert!(matches!(&s.panes["m"].kind, crate::layout::PaneKind::Term { cwd, .. } if cwd.is_empty()));
+    }
+
+    #[test]
+    fn fences_follow_markdown_theme_not_code_theme() {        let dir = std::env::temp_dir().join("kilim-md-test");
         std::fs::create_dir_all(&dir).unwrap();
         let md = dir.join("f.md");
         std::fs::write(&md, "# F\n\n```python\n# comment\nx = 1\n```\n").unwrap();

@@ -67,7 +67,7 @@ older three-pane arrangement (terminal + code + markdown) as a demo; both
 surfaces render either file.
 
 Dock geometry and pins persist in a sidecar (`layouts/<name>.perspective.json`);
-the chosen Lace theme, default terminal, and recent viewer files ride in it too.
+the chosen Lace theme, default terminal, shell start directories, and recent viewer files ride in it too.
 
 ## Clickable paths
 

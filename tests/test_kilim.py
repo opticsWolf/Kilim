@@ -62,6 +62,43 @@ def test_register_garbage_theme_fails(session):
         session.register_custom_theme("junk", "not a theme")
 
 
+def test_spawn_term_honors_cwd(tmp_path, monkeypatch):
+    """spawn_term cwd= lands the shell there (binding -> core -> pty)."""
+    import asyncio
+    import sys
+
+    monkeypatch.chdir(tmp_path)
+    doc = json.loads(json.dumps(DOC))
+    core = CoreSession(json.dumps(doc))
+    marker = "CWD-MARKER"
+    script = f"import os; print('{marker}:' + os.getcwd())"
+
+    async def go():
+        await core.spawn_term(
+            "t-cwd", "t", sys.executable, ["-c", script],
+            24, 200, 500, cwd=str(tmp_path),
+        )
+        hit = None
+        for _ in range(60):
+            await asyncio.sleep(0.1)
+            _total, _start, cells, _cursor, _modes, _dirty = await core.snapshot_term(
+                "t-cwd", 24, None
+            )
+            for row in cells:
+                text = "".join(c[0] for c in row)
+                if marker in text:
+                    hit = text
+                    break
+            if hit is not None:
+                break
+        await core.terminate_term("t-cwd", 1.0)
+        return hit
+
+    hit = asyncio.run(go())
+    assert hit is not None, "marker output never arrived"
+    assert str(tmp_path) in hit, hit
+
+
 def test_spawn_term_adds_live_shell(tmp_path, monkeypatch):
     """New shells splice into layout + panes and come up alive."""
     import asyncio

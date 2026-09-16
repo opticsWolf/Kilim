@@ -299,6 +299,74 @@ def test_terminal_menu_launches_shell():
         app.processEvents()
 
 
+def test_shell_start_directory_menu_saves_resets_and_forwards(tmp_path):
+    """Start Directory submenu: pick per shell, persist, reset, forward."""
+    import json
+    from pathlib import Path as _Path
+    from unittest.mock import AsyncMock, patch
+
+    from kilim._core import CoreSession
+
+    app, w = _window()
+    try:
+        shells = w._shell_options()
+        assert shells, "expected at least one shell on this machine"
+        label = shells[0][0]
+
+        def start_menu():
+            return next(
+                a.menu() for a in w.titleBar.terminal_menu.actions()
+                if a.text() == "Start Directory"
+            )
+
+        names = [
+            a.text() for a in start_menu().actions()
+            if a.text() not in ("", "Reset all to inherited")
+        ]
+        assert len(names) == len(shells)
+        assert all(n.endswith("inherited") for n in names)
+
+        target = tmp_path / "work"
+        target.mkdir()
+        act = next(
+            a for a in start_menu().actions() if a.text().startswith(label)
+        )
+        with patch(
+            "PySide6.QtWidgets.QFileDialog.getExistingDirectory",
+            return_value=str(target),
+        ) as dlg:
+            act.trigger()
+        assert dlg.call_count == 1
+        assert w.shell_cwds[label] == str(target)
+        sidecar = json.loads(_Path(w.perspective_path).read_text(encoding="utf-8"))
+        assert sidecar["shell_cwds"][label] == str(target)
+        # Menu rebuilt showing the choice; launch forwards it to core.
+        assert f"{label} \u2014 {target}" in [
+            a.text() for a in start_menu().actions()
+        ]
+        with patch.object(CoreSession, "spawn_term", new=AsyncMock()) as sp:
+            w.launch_shell(label, shells[0][1], shells[0][2])
+        assert sp.await_count == 1
+        assert sp.await_args.kwargs.get("cwd") == str(target)
+        # Reset clears every custom dir (sidecar + labels).
+        reset = next(
+            a for a in start_menu().actions()
+            if a.text() == "Reset all to inherited"
+        )
+        reset.trigger()
+        assert w.shell_cwds == {}
+        sidecar = json.loads(_Path(w.perspective_path).read_text(encoding="utf-8"))
+        assert sidecar["shell_cwds"] == {}
+        assert all(
+            a.text().endswith("inherited")
+            for a in start_menu().actions()
+            if a.text() not in ("", "Reset all to inherited")
+        )
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_themes_menu_switches_and_repaints(tmp_path):
     """Themes menu: code/terminal/lace actions apply, repaint, persist."""
     import json
@@ -314,12 +382,12 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
         assert "&Themes" in menus, sorted(menus)
         subs = {a.text(): a.menu() for a in menus["&Themes"].actions() if a.menu()}
-        assert "Code" in subs and "Terminal" in subs and "Lace" in subs, sorted(subs)
+        assert "Syntax" in subs and "Terminal" in subs and "App" in subs, sorted(subs)
         assert "Markdown" not in subs, "fences follow the code apply now"
         term_actions = {a.text(): a for a in subs["Terminal"].actions() if not a.isSeparator()}
         code_actions = {
             a.text(): a
-            for a in subs["Code"].actions()
+            for a in subs["Syntax"].actions()
             if a.text() in term_actions
         }
         # One shared ten: code + terminal lists match, no Pin menu, and no
@@ -328,8 +396,8 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         assert len(code_actions) == 10
         assert all(
             a.isSeparator() or a.text() in term_actions
-            for a in subs["Code"].actions()
-        ), "unexpected extra in the Code submenu"
+            for a in subs["Syntax"].actions()
+        ), "unexpected extra in the Syntax submenu"
         assert "&Pin" not in menus
         # One code apply covers Markdown too: both keys set + persisted equal.
         code_actions["Kilim Warm"].trigger()
@@ -345,7 +413,7 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         raw = json.loads(layout_file.read_text(encoding="utf-8"))
         assert raw["layout"]["terminal_theme"] == "Kilim Midnight Neo"
         # Lace menu is Kilim-only and flat: 10 actions, no stock presets.
-        lace_acts = [a for a in subs["Lace"].actions() if a.menu() is None]
+        lace_acts = [a for a in subs["App"].actions() if a.menu() is None]
         assert [a.text() for a in lace_acts] == ["Kilim Midnight", "Kilim Midnight Neo",
             "Kilim Dark", "Kilim Dark Neo",
             "Kilim Neutral", "Kilim Neutral Neo", "Kilim Light", "Kilim Light Neo",

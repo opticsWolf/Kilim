@@ -19,12 +19,14 @@ pub struct TermHandle {
 
 impl TermHandle {
     /// Spawn `cmd` and pump PTY output into a scrollback screen.
+    /// `cwd` is resolved by [`expand_cwd`] (inherit on empty/missing).
     pub async fn spawn(
         cmd: &str,
         args: &[String],
         rows: u16,
         cols: u16,
         scrollback: usize,
+        cwd: Option<&str>,
     ) -> Result<Arc<Self>, String> {
         // Empty cmd = "the platform default" — layouts stay portable.
         let (cmd, args) = if cmd.is_empty() {
@@ -39,7 +41,8 @@ impl TermHandle {
             xpixel: 0,
             ypixel: 0,
         };
-        let (backend, child) = spawn_platform(&cmd, &args, &env, Some(ws), None)
+        let resolved = expand_cwd(cwd);
+        let (backend, child) = spawn_platform(&cmd, &args, &env, Some(ws), resolved.as_deref())
             .await
             .map_err(|e| e.to_string())?;
         let screen = Arc::new(Mutex::new(HistoryScreen::new(
@@ -243,5 +246,51 @@ impl TermHandle {
 
     pub async fn set_scrollback_lines(&self, n: usize) {
         self.screen.lock().await.set_scrollback_lines(n);
+    }
+}
+
+/// Resolve a pane/shell start dir for `spawn_platform`.
+///
+/// Empty or missing input (and missing dirs) mean inherit — the child
+/// keeps the Kilim process cwd, exactly as before. A leading `~`
+/// expands to the home dir (USERPROFILE, then HOME). Never fails:
+/// bad input degrades to inherit instead of erroring the spawn.
+fn expand_cwd(cwd: Option<&str>) -> Option<String> {
+    let raw = cwd.map(str::trim).filter(|s| !s.is_empty())?;
+    let expanded = if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .ok()?;
+        format!("{}{}", home, &raw[1..])
+    } else {
+        raw.to_string()
+    };
+    std::path::Path::new(&expanded).is_dir().then_some(expanded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_cwd;
+
+    #[test]
+    fn cwd_empty_or_missing_means_inherit() {
+        assert_eq!(expand_cwd(None), None);
+        assert_eq!(expand_cwd(Some("")), None);
+        assert_eq!(expand_cwd(Some("   ")), None);
+        assert_eq!(expand_cwd(Some("kilim-definitely-not-a-dir")), None);
+    }
+
+    #[test]
+    fn cwd_existing_dir_passes_through() {
+        let dir = std::env::temp_dir();
+        let back = expand_cwd(dir.to_str());
+        assert!(back.is_some(), "temp dir should resolve");
+    }
+
+    #[test]
+    fn cwd_tilde_expands_to_home() {
+        let home = expand_cwd(Some("~"));
+        assert!(home.is_some(), "home dir should exist");
+        assert!(std::path::Path::new(&home.unwrap()).is_dir());
     }
 }

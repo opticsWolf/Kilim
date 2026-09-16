@@ -96,6 +96,13 @@ pub enum PaneKind {
         cmd: String,
         #[serde(default)]
         args: Vec<String>,
+        /// Start directory for the shell (layout authors write it here;
+        /// the Qt terminal menu stores per-shell choices in the sidecar
+        /// and passes them via spawn_term). Empty/absent inherits the
+        /// Kilim process cwd; a leading `~` expands to the home dir.
+        /// Missing dirs fall back to inherit at spawn, never an error.
+        #[serde(default)]
+        cwd: String,
         #[serde(default = "default_rows")]
         rows: u16,
         #[serde(default = "default_cols")]
@@ -232,6 +239,17 @@ mod tests {
         let doc2 = doc.replace("\"cmd\": \"sh\"", "\"cmd\": \"sh\", \"scrollback\": 42");
         let (_, panes2) = Layout::from_json(&doc2).unwrap();
         assert!(matches!(&panes2[0].kind, PaneKind::Term { scrollback: 42, .. }));
+    }
+
+    #[test]
+    fn term_cwd_defaults_empty_and_parses() {
+        // No key = inherit the process cwd (today's behavior, portable).
+        let doc = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t"}, "panes": [{"id": "t", "title": "t", "kind": "term"}]}"#;
+        let (_, panes) = Layout::from_json(doc).unwrap();
+        assert!(matches!(&panes[0].kind, PaneKind::Term { cwd, .. } if cwd.is_empty()));
+        let doc2 = doc.replace("\"kind\": \"term\"", "\"kind\": \"term\", \"cwd\": \"~/work\"");
+        let (_, panes2) = Layout::from_json(&doc2).unwrap();
+        assert!(matches!(&panes2[0].kind, PaneKind::Term { cwd, .. } if cwd == "~/work"));
     }
 
     #[test]

@@ -144,25 +144,25 @@ impl CoreSession {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Collect missing jobs under a short read lock (never held across await).
-            let jobs: Vec<(String, String, Vec<String>, u16, u16, usize)> = {
+            let jobs: Vec<(String, String, Vec<String>, u16, u16, usize, String)> = {
                 let s = inner.read().unwrap();
                 s.panes
                     .iter()
                     .filter_map(|(id, pane)| match &pane.kind {
-                        kilim_core::PaneKind::Term { cmd, args, rows, cols, scrollback } => {
+                        kilim_core::PaneKind::Term { cmd, args, rows, cols, scrollback, cwd } => {
                             let live = s.terms.get(id).map(|h| h.is_alive()).unwrap_or(false);
                             if live {
                                 None
                             } else {
-                                Some((id.clone(), cmd.clone(), args.clone(), *rows, *cols, *scrollback))
+                                Some((id.clone(), cmd.clone(), args.clone(), *rows, *cols, *scrollback, cwd.clone()))
                             }
                         }
                         _ => None,
                     })
                     .collect()
             };
-            for (id, cmd, args, rows, cols, scrollback) in jobs {
-                let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback)
+            for (id, cmd, args, rows, cols, scrollback, cwd) in jobs {
+                let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, Some(cwd.as_str()))
                     .await
                     .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
                 inner.write().unwrap().terms.insert(id, h);
@@ -175,12 +175,12 @@ impl CoreSession {
     fn restart_term<'py>(&self, py: Python<'py>, pane_id: String) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (cmd, args, rows, cols, scrollback) = {
+            let (cmd, args, rows, cols, scrollback, cwd) = {
                 let s = inner.read().unwrap();
                 let pane = s.panes.get(&pane_id).ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown pane '{pane_id}'")))?;
                 match &pane.kind {
-                    kilim_core::PaneKind::Term { cmd, args, rows, cols, scrollback } => {
-                        (cmd.clone(), args.clone(), *rows, *cols, *scrollback)
+                    kilim_core::PaneKind::Term { cmd, args, rows, cols, scrollback, cwd } => {
+                        (cmd.clone(), args.clone(), *rows, *cols, *scrollback, cwd.clone())
                     }
                     _ => return Err(pyo3::exceptions::PyValueError::new_err(format!("pane '{pane_id}' is not a term"))),
                 }
@@ -189,7 +189,7 @@ impl CoreSession {
             if let Some(h) = old {
                 h.terminate(1.0).await;
             }
-            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback)
+            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, Some(cwd.as_str()))
                 .await
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
             inner.write().unwrap().terms.insert(pane_id, h);
@@ -203,6 +203,7 @@ impl CoreSession {
     }
 
     /// Launch a new shell pane (insert + splice + spawn). Async, GIL released.
+    #[pyo3(signature = (pane_id, title, cmd, args, rows, cols, scrollback, cwd=None))]
     fn spawn_term<'py>(
         &self,
         py: Python<'py>,
@@ -213,6 +214,7 @@ impl CoreSession {
         rows: u16,
         cols: u16,
         scrollback: usize,
+        cwd: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -220,10 +222,10 @@ impl CoreSession {
                 inner
                     .write()
                     .unwrap()
-                    .insert_term_pane(&pane_id, &title, &cmd, &args, rows, cols, scrollback)
+                    .insert_term_pane(&pane_id, &title, &cmd, &args, rows, cols, scrollback, cwd.clone())
                     .map_err(pyo3::exceptions::PyRuntimeError::new_err)?
             };
-            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback)
+            let h = TermHandle::spawn(&cmd, &args, rows, cols, scrollback, cwd.as_deref())
                 .await
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
             inner.write().unwrap().terms.insert(pane_id, h);

@@ -75,8 +75,9 @@ class KilimWindow(FramelessLaceMainWindow):
         self.lace_theme: str | None = None
         self.terminal_theme: str | None = None
         self._kilim_by_lace = register_kilim_lace_themes()
-        self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "code": {}, "terminal": {}}
+        self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "syntax": {}, "terminal": {}}
         self.file_history: list[str] = []  # viewer files, newest first
+        self.shell_cwds: dict[str, str] = {}  # shell label -> start dir
         self.default_shell: tuple[str, str, list[str]] | None = None
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
         self._viewer_area = None  # viewer tab group's DockAreaWidget
@@ -154,6 +155,12 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.default_shell = entry
         if self.default_shell is None:
             self.default_shell = shells.default_entry()
+        shell_cwds = saved.get("shell_cwds")
+        if isinstance(shell_cwds, dict):
+            # Machine-local paths: sidecar, never the shared layout.
+            self.shell_cwds = {
+                str(k): str(v) for k, v in shell_cwds.items()
+            }
         history = saved.get("file_history")
         if isinstance(history, list):
             self.file_history = [p for p in history if isinstance(p, str)]
@@ -392,6 +399,45 @@ class KilimWindow(FramelessLaceMainWindow):
             act.triggered.connect(
                 lambda _c=False, n=label, c=cmd, a=args: self.launch_shell(n, c, a)
             )
+        # Per-shell start directories (sidecar; inherited cwd when unset).
+        menu.addSeparator()
+        start = menu.addMenu("Start Directory")
+        for label, _cmd, _args in entries:
+            current = self.shell_cwds.get(label)
+            act = start.addAction(
+                f"{label} \u2014 {current}" if current else f"{label} \u2014 inherited"
+            )
+            act.triggered.connect(
+                lambda _c=False, l=label: self.choose_shell_cwd(l)
+            )
+        if entries:
+            start.addSeparator()
+            reset = start.addAction("Reset all to inherited")
+            reset.triggered.connect(lambda _c=False: self.reset_shell_cwds())
+
+    def choose_shell_cwd(self, label: str) -> None:
+        """Pick where this shell starts; remembered in the sidecar."""
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        current = self.shell_cwds.get(label)
+        picked = QFileDialog.getExistingDirectory(
+            self, f"Start directory for {label}", current or str(Path.home())
+        )
+        if not picked:
+            return  # cancelled: keep whatever was there
+        self.shell_cwds[label] = picked
+        self._save_sidecar(shell_cwds=self.shell_cwds)
+        self._build_terminal_menu()
+
+    def reset_shell_cwds(self) -> None:
+        """Forget every custom start directory (back to inherited)."""
+        if not self.shell_cwds:
+            return
+        self.shell_cwds = {}
+        self._save_sidecar(shell_cwds=self.shell_cwds)
+        self._build_terminal_menu()
 
     def set_default_shell(self, label: str) -> None:
         """Pick the shell `New <label>` spawns; remembered across launches."""
@@ -593,12 +639,12 @@ class KilimWindow(FramelessLaceMainWindow):
         pane.deleteLater()
 
     def _build_themes_menu(self):
-        """Themes menu: Lace chrome, code (Qt + TUI), terminal (Qt terms).
+        """Themes menu: App chrome, syntax (Qt + TUI), terminal (Qt terms).
 
         One shared registry (the Kilim ten, Kilim Midnight default) feeds
-        every submenu, so no choice can silently fall back. Code covers
+        every submenu, so no choice can silently fall back. Syntax covers
         Markdown too (fences follow the code theme); terminals theme
-        separately. Choices persist: code/terminal into the layout file,
+        separately. Choices persist: syntax/terminal into the layout file,
         Lace into the sidecar.
         """
         from PySide6.QtGui import QActionGroup
@@ -609,7 +655,7 @@ class KilimWindow(FramelessLaceMainWindow):
 
         # Lace dock chrome: the Kilim group only (flat, radio-checked).
         # Stock Lace presets stay out — the app exposes Kilim chrome.
-        lace_menu = themes.addMenu("Lace")
+        lace_menu = themes.addMenu("App")
         try:
             from lace import apply_dock_theme, theme_groups
 
@@ -632,9 +678,9 @@ class KilimWindow(FramelessLaceMainWindow):
             none = lace_menu.addAction("No Kilim themes")
             none.setEnabled(False)
 
-        # Code theme: TUI file panes + Qt FilePane share the session theme;
+        # Syntax theme: TUI file panes + Qt FilePane share the session theme;
         # Qt MarkdownPanes follow it too (one apply, no divergence).
-        code_menu = themes.addMenu("Code")
+        code_menu = themes.addMenu("Syntax")
         code_group = QActionGroup(self)
         code_group.setExclusive(True)
         current_code = self.bridge.core.theme()
@@ -642,7 +688,7 @@ class KilimWindow(FramelessLaceMainWindow):
             act = code_menu.addAction(name)
             act.setCheckable(True)
             act.setChecked(name == current_code)
-            self._theme_actions["code"][name] = act
+            self._theme_actions["syntax"][name] = act
             act.triggered.connect(
                 lambda _c=False, n=name: self.apply_code_theme(n)
             )
@@ -734,7 +780,7 @@ class KilimWindow(FramelessLaceMainWindow):
         """Radio-check the Themes menu to live state (unified applies)."""
         want = {
             "lace": self.lace_theme,
-            "code": self.bridge.core.theme(),
+            "syntax": self.bridge.core.theme(),
             "terminal": self.terminal_theme,
         }
         for group, current in want.items():
@@ -790,7 +836,12 @@ class KilimWindow(FramelessLaceMainWindow):
         return shells.find_shells()
 
     def launch_shell(self, name: str, cmd: str, args: list[str]):
-        """Spawn a new shell pane (core) and dock it left."""
+        """Spawn a new shell pane (core) and dock it left.
+
+        Starts in the shell's configured directory (Terminal menu), or
+        inherits the Kilim process cwd when unset — the core falls back
+        to inherit for missing dirs too, never an error.
+        """
         from lace import DockWidget
         from lace import DockWidgetArea
 
@@ -800,7 +851,7 @@ class KilimWindow(FramelessLaceMainWindow):
             self._term_seq += 1
             pid = f"term-new{self._term_seq}"
         self.bridge.call(
-            lambda: self.bridge.core.spawn_term(pid, name, cmd, args, 24, 80, 5000)
+            lambda: self.bridge.core.spawn_term(pid, name, cmd, args, 24, 80, 5000, cwd=self.shell_cwds.get(name))
         )
         inner = TerminalPane(self.bridge, pid, self.terminal_theme)
         dock = DockWidget(name)
