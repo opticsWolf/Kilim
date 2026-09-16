@@ -12,8 +12,11 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI req
 
 from kilim.git_pane import (
     find_git,
+    layout_lanes,
     read_branches,
-    read_commit,
+    read_commit_body,
+    read_commit_files,
+    read_file_diff,
     read_history,
     repo_root,
     split_refs,
@@ -50,7 +53,7 @@ def repo(tmp_path):
     _git(root, "checkout", "-b", "feature")
     (root / "c.txt").write_text("three\n")
     _git(root, "add", "c.txt")
-    _git(root, "commit", "-m", "feature work")
+    _git(root, "commit", "-m", "feature work", "-m", "the body")
     _git(root, "checkout", "main")
     (root / "d.txt").write_text("four\n")
     _git(root, "add", "d.txt")
@@ -84,7 +87,6 @@ def test_history_parses_merge_refs_and_graph(repo):
     assert len(merge["parents"]) == 2
     assert all(p in by_sha for p in merge["parents"])
     assert "main" in merge["refs"] and "tag: v0.1" in merge["refs"]
-    assert all("*" in r["graph"] for r in rows)  # every record is a node row
 
 
 def test_history_limit_reports_truncation(repo):
@@ -106,11 +108,63 @@ def test_branches_lists_current_and_locals(repo):
     assert set(branches) == {"main", "feature"}
 
 
-def test_commit_detail_has_message_and_stat(repo):
+def test_commit_files_lists_statuses(repo):
+    """Merge shows first-parent files; the root shows everything added."""
     rows, _, _ = read_history(repo)
-    text = read_commit(repo, rows[0]["sha"])
-    assert "merge feature" in text
-    assert ".txt" in text  # file stat, not just the message
+    by_subject = {r["subject"]: r for r in rows}
+    files, err = read_commit_files(repo, by_subject["merge feature"]["sha"])
+    assert err is None
+    assert ("A", "c.txt", None) in files
+    assert "d.txt" not in {f[1] for f in files}  # already in first parent
+    files, err = read_commit_files(repo, by_subject["first commit"]["sha"])
+    assert err is None
+    assert files == [("A", "a.txt", None)]
+
+
+def test_file_diff_unified_against_first_parent(repo):
+    rows, _, _ = read_history(repo)
+    by_subject = {r["subject"]: r for r in rows}
+    merge = by_subject["merge feature"]
+    text = read_file_diff(repo, merge["sha"], merge["parents"][0], "c.txt")
+    assert "@@" in text and "+three" in text
+
+
+def test_commit_body_strips_subject(repo):
+    rows, _, _ = read_history(repo)
+    by_subject = {r["subject"]: r for r in rows}
+    assert read_commit_body(repo, by_subject["feature work"]["sha"]) == "the body"
+    assert read_commit_body(repo, by_subject["first commit"]["sha"]) == ""
+
+
+def test_layout_lanes_linear_chain():
+    """Straight history: one lane, no curves, slots stay zero."""
+    cs = [{"sha": s, "parents": p} for s, p in
+          [("C", ["B"]), ("B", ["A"]), ("A", [])]]
+    rows = layout_lanes(cs)
+    assert [(r["slot"], r["edges"]) for r in rows] == [(0, []), (0, []), (0, [])]
+    assert [r["bottom"] for r in rows] == [["B"], ["A"], [None]]
+
+
+def test_layout_lanes_fork_and_merge():
+    """D and C fork off B: C's row curves back, B continues straight."""
+    cs = [{"sha": s, "parents": p} for s, p in
+          [("D", ["B"]), ("C", ["B"]), ("B", ["A"]), ("A", [])]]
+    rows = layout_lanes(cs)
+    assert [(r["slot"], r["edges"]) for r in rows] == [
+        (0, []), (1, [(1, 0)]), (0, []), (0, [])]
+    assert [r["bottom"] for r in rows] == [
+        ["B"], ["B", None], ["A", None], [None, None]]
+
+
+def test_layout_lanes_octopus_merge():
+    """Three parents: first continues, two fork out and curve back."""
+    cs = [{"sha": s, "parents": p} for s, p in
+          [("M", ["A", "B", "C"]), ("A", ["R"]), ("B", ["R"]),
+           ("C", ["R"]), ("R", [])]]
+    rows = layout_lanes(cs)
+    assert [(r["slot"], r["edges"]) for r in rows] == [
+        (0, [(0, 1), (0, 2)]), (0, []), (1, [(1, 0)]), (2, [(2, 0)]), (0, [])]
+    assert [r["bottom"][-1] for r in rows] == ["C", "C", "C", None, None]
 
 
 def test_empty_repo_reads_empty_not_error(tmp_path):
@@ -156,20 +210,16 @@ def _window(layout, sidecar):
     return app, w
 
 
-def _click(view, pos):
-    """Synthesize a left click (press + release, no drag) at `pos`."""
+def _gclick(view, pos):
+    """Left click on a plain QWidget (position + global, press/release)."""
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
     for typ in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
         buttons = Qt.LeftButton if typ == QEvent.MouseButtonPress else Qt.NoButton
         ev = QMouseEvent(
-            typ,
-            QPointF(pos),
-            QPointF(view.viewport().mapToGlobal(pos)),
-            Qt.LeftButton,
-            buttons,
-            Qt.NoModifier,
+            typ, QPointF(pos), QPointF(view.mapToGlobal(pos)),
+            Qt.LeftButton, buttons, Qt.NoModifier,
         )
         if typ == QEvent.MouseButtonPress:
             view.mousePressEvent(ev)
@@ -177,10 +227,16 @@ def _click(view, pos):
             view.mouseReleaseEvent(ev)
 
 
-def test_git_dock_opens_renders_and_click_shows_detail(scene, repo):
-    """Views > Git History: five graph rows, click lands the merge detail."""
-    from PySide6.QtGui import QTextCursor
+def _row_center(pane, i):
+    """Widget coords of a graph row's middle (TextCenter of the node)."""
+    from kilim.git_pane import ROW_H
+    from PySide6.QtCore import QPoint
 
+    return QPoint(30, i * ROW_H + ROW_H // 2)
+
+
+def test_git_dock_opens_graph_and_autoshows_merge_inspector(scene, repo):
+    """Five painted rows, newest auto-selected: message + files + diff."""
     layout, sidecar = scene
     app, w = _window(layout, sidecar)
     try:
@@ -188,14 +244,80 @@ def test_git_dock_opens_renders_and_click_shows_detail(scene, repo):
         assert "git" in w.pane_docks
         pane = w.git_pane
         assert pane.repo and os.path.normcase(pane.repo) == os.path.normcase(repo)
-        view = pane.history_view
-        assert len(pane._commits) == 5
-        node = pane._block_commits.index(0)  # merge row's visual line
-        assert "merge feature" in view.document().findBlockByNumber(node).text()
-        rect = view.cursorRect(QTextCursor(view.document().findBlockByNumber(node)))
-        _click(view, rect.center())
+        assert len(pane._commits) == 5 and len(pane.graph._rows) == 5
+        slots = [r["slot"] for r in pane.graph._rows]
+        assert slots[0] == 0 and max(slots) >= 1  # merge forked a lane
+        assert "merge feature" in pane.msg_view.toPlainText()
+        assert pane._files_label.text() == f"Files ({pane.files_list.count()})"
+        assert pane.files_list.count() >= 1
+        assert "+three" in pane.diff_view.toPlainText()  # c.txt vs 1st parent
+    finally:
+        w.close()
         app.processEvents()
-        assert "merge feature" in pane.detail_view.toPlainText()
+
+
+def test_git_click_selects_and_hover_tracks(scene, repo):
+    """Click moves the selection (message follows); hover tracks the row."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        pane = w.git_pane
+        _gclick(pane.graph, _row_center(pane, 3))
+        app.processEvents()
+        assert pane._selected_sha == pane._commits[3]["sha"]
+        assert "second commit" in pane.msg_view.toPlainText()
+        ev = QMouseEvent(
+            QEvent.MouseMove, QPointF(_row_center(pane, 1)),
+            QPointF(pane.graph.mapToGlobal(_row_center(pane, 1))),
+            Qt.NoButton, Qt.NoButton, Qt.NoModifier,
+        )
+        pane.graph.mouseMoveEvent(ev)
+        assert pane.graph._hover == 1
+        assert pane._commits[1]["sha"] in pane.graph._connected
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_git_keyboard_moves_selection(scene, repo):
+    """Down-arrow steps the inspector to the next commit."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        pane = w.git_pane
+        assert pane._selected_sha == pane._commits[0]["sha"]
+        pane.graph.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.NoModifier))
+        app.processEvents()
+        assert pane._selected_sha == pane._commits[1]["sha"]
+        assert "feature work" in pane.msg_view.toPlainText()
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_git_file_pick_shows_its_diff(scene, repo):
+    """The file list drives the diff preview (c.txt: added with +three)."""
+    from PySide6.QtCore import Qt
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        pane = w.git_pane
+        hits = pane.files_list.findItems("c.txt", Qt.MatchEndsWith)
+        assert hits, "merge must list c.txt"
+        pane.files_list.setCurrentRow(pane.files_list.row(hits[0]))
+        app.processEvents()
+        diff = pane.diff_view.toPlainText()
+        assert "@@" in diff and "+three" in diff
     finally:
         w.close()
         app.processEvents()
@@ -213,12 +335,8 @@ def test_git_branch_filter_narrows_rows(scene, repo):
         pane._branch_box.setCurrentIndex(idx)
         app.processEvents()
         assert len(pane._commits) == 3
-        texts = [
-            pane.history_view.document().findBlockByNumber(i).text()
-            for i, c in enumerate(pane._block_commits) if c is not None
-        ]
-        assert len(texts) == 3
-        assert not any("merge feature" in t or "third commit" in t for t in texts)
+        subjects = [c["subject"] for c in pane._commits]
+        assert not any(s in ("merge feature", "third commit") for s in subjects)
     finally:
         w.close()
         app.processEvents()

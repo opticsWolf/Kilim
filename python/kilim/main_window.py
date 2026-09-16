@@ -334,7 +334,7 @@ class KilimWindow(FramelessLaceMainWindow):
                 return lay.itemAt(0).widget()
             return self.md_panes[pid]
         if pid == "git" and self.git_pane is not None:
-            return self.git_pane.history_view
+            return self.git_pane.graph
         return None
 
     def _claim_pane_focus(self):
@@ -855,7 +855,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self._save_sidecar(git_open=True, git_repo=pane.repo)
         if not _startup:
             try:
-                pane.history_view.setFocus()
+                pane.graph.setFocus()
             except RuntimeError:
                 pass
 

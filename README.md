@@ -6,9 +6,9 @@ A multi-view terminal workspace: **one headless Rust core, two surfaces** — a
 Terminal panes, syntax-highlighted code panes, and Markdown previews (GFM,
 KaTeX math, mermaid) share one `Session`: spawn a shell in either surface and
 it shows up in both. The Qt surface turns file paths in terminal output into
-links: a click opens the file in a viewer dock. Views > Git History docks a
-branch-graph commit browser (git CLI, no new deps) for the active terminal's
-repo: click a commit for its message and file stat, filter by branch, and it
+links: a click opens the file in a viewer dock. Views > Git History docks a commit browser (git CLI, no new deps) for
+the active terminal's repo: a painted branch graph with ref pills, click
+a commit for its message and file stat, filter by branch, and it
 refreshes itself after commits and fetches.
 
 ## Surfaces

@@ -1,10 +1,7 @@
 """Git history dock: backend (git CLI, no new deps) + GitPane widget.
 
-The graph comes from `git log --graph` itself — lane routing is git's
-job; this module only splits its records (\\x1e-separated, \\0-separated
-fields) and paints them. Rows are `{"sha", "parents", "author", "date",
-"refs", "subject", "graph"}. Everything above GitPane is Qt-free, so the
-backend unit-tests without a QApplication.
+The lanes come from layout_lanes (this module's own routing over the
+commit DAG) — git only lists the commits, never draws.
 """
 
 from __future__ import annotations
@@ -15,16 +12,32 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QFileSystemWatcher, QPointF, Qt, QTimer
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +46,16 @@ from kilim.qt_bridge import Bridge
 from kilim.qt_themes import cell_qcolor
 
 HISTORY_LIMIT = 400  # rows per read; more is a scrollback, not a view
-COMMIT_CAP = 300  # detail lines: message + stat, never a full patch
+COMMIT_CAP = 300  # diff lines: capped, never a full huge patch
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # diff root vs this
+
+LANE_COLORS = [  # vivid per-lane inks (readable on dark and light paper)
+    "#4da3ff", "#4dd06a", "#ffbe3c", "#ff6b6b",
+    "#c586ff", "#4dd6d6", "#ff8ad4", "#a3e635",
+]
+ROW_H = 24  # fixed row pitch: graph gutter + one text line
+LANE_W = 14  # lane column pitch in the gutter
+GUTTER_PAD = 10  # left margin before lane zero
 
 # Graph drawing chars are never hex: `*` nodes, `|` bars, `/` `\` slopes,
 # `_` merge rails, padding spaces. The 40-hex sha right after is the split.
@@ -102,7 +124,7 @@ def read_history(
     try:
         out = _run_git(
             repo,
-            "log", "--graph", "--topo-order", ref,
+            "log", "--topo-order", ref,
             f"--max-count={limit + 1}",
             "--pretty=format:%H%x00%P%x00%an%x00%ae%x00%aI%x00%D%x00%s%x1e",
         )
@@ -120,7 +142,7 @@ def read_history(
         m = _RECORD.match(record)
         if m is None:
             continue  # never observed; a weird line must not kill the view
-        graph, sha, rest = m.group(1), m.group(2), m.group(3)
+        _prefix, sha, rest = m.group(1), m.group(2), m.group(3)
         fields = rest.split("\x00")
         if len(fields) < 6:
             continue
@@ -132,7 +154,6 @@ def read_history(
             "date": date,
             "refs": refs,
             "subject": subject,
-            "graph": graph.rstrip(),
         })
     return rows[:limit], len(rows) > limit, None
 
@@ -152,19 +173,108 @@ def read_branches(repo: str) -> tuple[str, list[str], str | None]:
     return current, branches, None
 
 
-def read_commit(repo: str, sha: str) -> str:
-    """Full message + file stat for one commit, capped (no patch)."""
+def read_commit_files(repo: str, sha: str) -> tuple[list[tuple[str, str, str | None]], str | None]:
+    """(files, error): (status, path, old_path) per changed file.
+
+    First-parent diff, so merges show what they brought in and roots
+    show every file as added. R/C rows carry the old path too."""
     try:
-        out = _run_git(repo, "show", "--stat", "--format=fuller", sha, "--")
+        out = _run_git(repo, "show", "--name-status", "--format=", "--first-parent", sha, "--")
     except (OSError, subprocess.TimeoutExpired) as e:
-        return f"git show failed: {e}"
+        return [], f"git show failed: {e}"
     if out.returncode != 0:
         err = out.stderr.strip().splitlines()
-        return err[0] if err else f"git show exited {out.returncode}"
+        return [], err[0] if err else f"git show exited {out.returncode}"
+    files: list[tuple[str, str, str | None]] = []
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0][:1]
+        if len(parts) >= 3:  # R100/C100 old new
+            files.append((status, parts[2], parts[1]))
+        elif len(parts) == 2:
+            files.append((status, parts[1], None))
+    return files, None
+
+
+def read_file_diff(repo: str, sha: str, parent: str | None, path: str) -> str:
+    """Unified diff of one file in a commit (vs first parent / empty)."""
+    base = parent or EMPTY_TREE
+    try:
+        out = _run_git(repo, "diff", "--no-color", "--no-ext-diff", base, sha, "--", path)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"git diff failed: {e}"
+    if out.returncode != 0:
+        err = out.stderr.strip().splitlines()
+        return err[0] if err else f"git diff exited {out.returncode}"
     lines = out.stdout.splitlines()
     if len(lines) > COMMIT_CAP:
         lines = lines[:COMMIT_CAP] + [f"… {len(lines) - COMMIT_CAP} more lines"]
-    return "\n".join(lines).rstrip() or "(empty commit)"
+    return "\n".join(lines).rstrip() or "(no textual diff)"
+
+
+def read_commit_body(repo: str, sha: str) -> str:
+    """Full message body (subject stripped: the header shows it bold)."""
+    try:
+        out = _run_git(repo, "log", "-1", "--format=%B", sha, "--")
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0:
+        return ""
+    return "\n".join(out.stdout.strip("\n").splitlines()[1:]).strip("\n")
+
+
+_STATUS_COLORS = {  # name-status letter -> file-list ink
+    "M": "yellow", "A": "brightgreen", "D": "red", "R": "cyan",
+    "C": "brightmagenta", "T": "gray", "U": "brightred",
+}
+
+
+def layout_lanes(commits: list[dict]) -> list[dict]:
+    """Newest-first commits -> paint rows for the graph gutter.
+
+    Row: {"sha", "slot", "top", "bottom", "edges"}. `top`/`bottom`
+    are the lane columns (sha|None) above/below the node; `edges` are
+    (from, to) curves drawn from the node down into a lane. First
+    parents continue straight in the child's slot, extra parents fork
+    new lanes, already-reserved parents merge back with a curve, and a
+    freed slot ends the line (roots, lane tips). Missing parents
+    (shallow clones) simply run their lane to the bottom edge."""
+    lanes: list[str | None] = []
+    rows: list[dict] = []
+    for c in commits:
+        sha = c["sha"]
+        if sha in lanes:
+            s = lanes.index(sha)
+        else:
+            try:
+                s = lanes.index(None)
+            except ValueError:
+                s = len(lanes)
+                lanes.append(None)
+            lanes[s] = sha
+        top = list(lanes)
+        lanes[s] = None
+        edges: list[tuple[int, int]] = []
+        for i, p in enumerate(c["parents"]):
+            if p in lanes:
+                j = lanes.index(p)
+                if j != s:
+                    edges.append((s, j))
+            else:
+                if i == 0:
+                    j = s  # straight continuation, no curve
+                else:
+                    try:
+                        j = lanes.index(None)
+                    except ValueError:
+                        j = len(lanes)
+                        lanes.append(None)
+                    edges.append((s, j))
+                lanes[j] = p
+        rows.append({"sha": sha, "slot": s, "top": top, "bottom": list(lanes), "edges": edges})
+    return rows
 
 
 def split_refs(refs: str) -> tuple[list[str], list[str], list[str]]:
@@ -188,25 +298,247 @@ def split_refs(refs: str) -> tuple[list[str], list[str], list[str]]:
     return head, branches, tags
 
 
-class _HistoryView(QPlainTextEdit):
-    """Read-only history with click-to-show (block -> commit callback)."""
+class GraphView(QWidget):
+    """Painted commit graph: lanes, bezier merges, dots, pills, hover.
+
+    One fixed-height row per commit (layout_lanes output): verticals for
+    passing lanes, gradient curves for forks/merges, a dot on the
+    commit's slot, then subject + ref pills + dimmed meta. Hover tints
+    the row, rings the node and every ancestor/descendant dot, and shows
+    the full identity as a tooltip; click selects (Up/Down move it)."""
 
     def __init__(self, on_pick):
         super().__init__()
         self._on_pick = on_pick
-        self.setReadOnly(True)
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._commits: list[dict] = []
+        self._rows: list[dict] = []
+        self._by_sha: dict[str, int] = {}
+        self._children: dict[str, list[str]] = {}
+        self._hover: int | None = None
+        self._selected: str | None = None
+        self._connected: set[str] = set()
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFont(QFont("Cascadia Mono", 10))
+
+    # ── model ──
+    def set_commits(self, commits: list[dict]):
+        self._commits = commits
+        self._rows = layout_lanes(commits)
+        self._by_sha = {c["sha"]: i for i, c in enumerate(commits)}
+        children: dict[str, list[str]] = {}
+        for c in commits:
+            for p in c["parents"]:
+                children.setdefault(p, []).append(c["sha"])
+        self._children = children
+        self._hover = None
+        self._connected = self._connected_shas(self._selected)
+        self._resize_to_content()
+        self.update()
+
+    def _connected_shas(self, sha: str | None) -> set[str]:
+        """sha + its ancestors + descendants (bounded: loaded rows only)."""
+        if not sha:
+            return set()
+        seen = {sha}
+        stack = [sha]
+        by_sha = {c["sha"]: c for c in self._commits}
+        while stack and len(seen) < 5000:
+            cur = stack.pop()
+            c = by_sha.get(cur)
+            if c is None:
+                continue
+            for nxt in list(c["parents"]) + self._children.get(cur, []):
+                if nxt not in seen and nxt in by_sha:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return seen
+
+    def select(self, sha: str | None):
+        self._selected = sha
+        if self._hover is None:
+            self._connected = self._connected_shas(sha)
+        self.update()
+
+    def row_of(self, sha: str) -> int | None:
+        idx = self._by_sha.get(sha)
+        return idx
+
+    def ensure_row_visible(self, i: int):
+        area = self.parentWidget()
+        while area is not None and not isinstance(area, QScrollArea):
+            area = area.parentWidget()
+        if area is not None:
+            area.ensureVisible(0, i * ROW_H + ROW_H // 2, 0, ROW_H * 2)
+
+    def _resize_to_content(self):
+        fm = QFontMetrics(self.font())
+        lanes = max((max(len(r["top"]), len(r["bottom"])) for r in self._rows), default=0)
+        gutter = GUTTER_PAD + lanes * LANE_W + 8
+        widest = 0
+        for c in self._commits:
+            w = fm.horizontalAdvance(c["subject"] or "(no message)")
+            head, branches, tags = split_refs(c["refs"])
+            for name in head + branches + tags:
+                w += fm.horizontalAdvance(name) + 18
+            w += fm.horizontalAdvance(f"  {c['author']} · {c['date'][:10]}")
+            widest = max(widest, w)
+        self.setMinimumSize(gutter + widest + GUTTER_PAD, max(1, len(self._rows)) * ROW_H)
+
+    # ── interaction ──
+    def _row_at(self, y: int) -> int | None:
+        i = y // ROW_H
+        return i if 0 <= i < len(self._rows) else None
+
+    def mouseMoveEvent(self, e):
+        i = self._row_at(e.position().toPoint().y())
+        if i != self._hover:
+            self._hover = i
+            self._connected = self._connected_shas(
+                self._rows[i]["sha"] if i is not None else self._selected)
+            self.update()
+            if i is not None:
+                c = self._commits[i]
+                QToolTip.showText(
+                    e.globalPosition().toPoint(),
+                    f"{c['sha']}\n{c['subject']}\n{c['author']} · {c['date'][:10]}",
+                    self,
+                )
+        super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = None
+        self._connected = self._connected_shas(self._selected)
+        self.update()
+        super().leaveEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            cur = self.cursorForPosition(e.pos())
-            if cur.block().isValid():
-                self._on_pick(cur.block().blockNumber())
+            i = self._row_at(e.position().toPoint().y())
+            if i is not None:
+                self._on_pick(i)
         super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        cur = self._by_sha.get(self._selected or "", None)
+        if cur is None:
+            cur = self._hover
+        if e.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End):
+            if not self._rows:
+                return
+            base = cur if cur is not None else 0
+            if e.key() == Qt.Key_Up:
+                nxt = max(0, base - 1)
+            elif e.key() == Qt.Key_Down:
+                nxt = min(len(self._rows) - 1, base + 1)
+            elif e.key() == Qt.Key_Home:
+                nxt = 0
+            else:
+                nxt = len(self._rows) - 1
+            self._on_pick(nxt)
+            self.ensure_row_visible(nxt)
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    # ── paint ──
+    def paintEvent(self, e):
+        p = QPainter(self)
+        fm = p.fontMetrics()
+        text_pen = self.palette().color(self.foregroundRole())
+        hl = self.palette().color(QPalette.Highlight)
+        first = max(0, e.rect().top() // ROW_H - 1)
+        last = min(len(self._rows), e.rect().bottom() // ROW_H + 2)
+        for i in range(first, last):
+            self._paint_row(p, fm, text_pen, hl, i)
+
+    def _lane_x(self, j: int) -> int:
+        return GUTTER_PAD + j * LANE_W
+
+    def _paint_row(self, p, fm, text_pen, hl, i: int):
+        row = self._rows[i]
+        c = self._commits[i]
+        y, cy = i * ROW_H, i * ROW_H + ROW_H // 2
+        slot = row["slot"]
+        if c["sha"] == self._selected:
+            p.fillRect(0, y, self.width(), ROW_H, QColor(hl).darker(115))
+        elif i == self._hover:
+            faint = QColor(hl)
+            faint.setAlpha(45)
+            p.fillRect(0, y, self.width(), ROW_H, faint)
+        top, bottom = row["top"], row["bottom"]
+        for j in range(max(len(top), len(bottom))):
+            x = self._lane_x(j)
+            t = top[j] if j < len(top) else None
+            b = bottom[j] if j < len(bottom) else None
+            col = QColor(LANE_COLORS[j % len(LANE_COLORS)])
+            p.setPen(QPen(col, 2))
+            if j == slot:
+                p.drawLine(x, y + 1, x, cy)
+                if b is not None:
+                    p.drawLine(x, cy, x, y + ROW_H - 1)
+            else:
+                if t is not None:
+                    p.drawLine(x, y + 1, x, cy)
+                if b is not None:
+                    p.drawLine(x, cy, x, y + ROW_H - 1)
+        for s, j in row["edges"]:
+            if j == s:
+                continue
+            xs, xj = self._lane_x(s), self._lane_x(j)
+            grad = QLinearGradient(xs, cy, xj, y + ROW_H)
+            grad.setColorAt(0.0, QColor(LANE_COLORS[s % len(LANE_COLORS)]))
+            grad.setColorAt(1.0, QColor(LANE_COLORS[j % len(LANE_COLORS)]))
+            path = QPainterPath(QPointF(xs, cy))
+            path.cubicTo(xs, cy + 8, xj, y + ROW_H - 8, xj, y + ROW_H - 1)
+            p.strokePath(path, QPen(QBrush(grad), 2))
+        dot = QColor(LANE_COLORS[slot % len(LANE_COLORS)])
+        p.setPen(QPen(dot.darker(130), 1))
+        p.setBrush(QBrush(dot))
+        p.drawEllipse(QPointF(self._lane_x(slot), cy), 4.5, 4.5)
+        if c["sha"] in self._connected:
+            ring = QColor(dot).lighter(150)
+            p.setPen(QPen(ring, 2 if c["sha"] == self._selected or i == self._hover else 1))
+            p.setBrush(QBrush(Qt.NoBrush))
+            extra = 3.5 if c["sha"] == self._selected or i == self._hover else 2.5
+            p.drawEllipse(QPointF(self._lane_x(slot), cy), 4.5 + extra, 4.5 + extra)
+        lanes = max(len(top), len(bottom))
+        x = GUTTER_PAD + lanes * LANE_W + 8
+        base = fm.ascent() + (ROW_H - fm.height()) // 2
+        p.setPen(QPen(text_pen))
+        p.drawText(x, y + base, c["subject"] or "(no message)")
+        x += fm.horizontalAdvance(c["subject"] or "(no message)") + 6
+        head, branches, tags = split_refs(c["refs"])
+        for name, color, bold in (
+            [(n, "brightgreen", True) for n in head]
+            + [(n, "yellow", False) for n in branches]
+            + [(f"tag: {n}", "brightmagenta", False) for n in tags]
+        ):
+            w = fm.horizontalAdvance(name)
+            pill_h = fm.height() + 2
+            pill = QColor(cell_qcolor(color, text_pen))
+            fill = QColor(pill)
+            fill.setAlpha(40)
+            p.setPen(QPen(pill, 1))
+            p.setBrush(QBrush(fill))
+            p.drawRoundedRect(x, y + (ROW_H - pill_h) // 2, w + 12, pill_h, 7, 7)
+            if bold:
+                f = QFont(self.font())
+                f.setBold(True)
+                p.setFont(f)
+            p.setPen(QPen(pill))
+            p.drawText(x + 6, y + base, name)
+            if bold:
+                p.setFont(self.font())
+            p.setPen(QPen(text_pen))
+            x += w + 18
+        meta = f"{c['author']} · {c['date'][:10]}"
+        p.setPen(QPen(cell_qcolor("gray", text_pen)))
+        p.drawText(x, y + base, meta)
 
 
 class GitPane(QWidget):
-    """Git history dock: graph list on top, commit detail below.
+    """Git history dock: painted graph on top, commit inspector below.
 
     Repo sources, in order: explicit path, the active terminal's live
     directory (OSC 7 snapshot cwd), the app directory — each walked up
@@ -222,7 +554,8 @@ class GitPane(QWidget):
         self.repo: str | None = None
         self.on_repo_changed = None
         self._commits: list[dict] = []
-        self._block_commits: list[int | None] = []  # block -> commit idx
+        self._selected_sha: str | None = None
+        self._files: list[tuple[str, str, str | None]] = []
         self._ref = "--all"
         self._refresh_queued = False
 
@@ -240,6 +573,9 @@ class GitPane(QWidget):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(lambda _c=False: self.refresh())
         bar.addWidget(refresh)
+        self._more_label = QLabel("")
+        self._more_label.setToolTip("History is capped: narrow the branch filter to see more")
+        bar.addWidget(self._more_label)
         open_btn = QPushButton("Open…")
         open_btn.clicked.connect(lambda _c=False: self.choose_repo())
         bar.addWidget(open_btn)
@@ -247,16 +583,34 @@ class GitPane(QWidget):
 
         split = QSplitter(Qt.Vertical)
         mono = QFont("Cascadia Mono", 10)
-        self.history_view = _HistoryView(self._pick_row)
-        self.history_view.setFont(mono)
-        split.addWidget(self.history_view)
-        self.detail_view = QPlainTextEdit()
-        self.detail_view.setReadOnly(True)
-        self.detail_view.setFont(mono)
-        self.detail_view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.detail_view.setPlaceholderText("Select a commit to see its message and files.")
-        split.addWidget(self.detail_view)
-        split.setSizes([300, 200])
+        self.graph_scroll = QScrollArea()
+        self.graph_scroll.setWidgetResizable(True)
+        self.graph = GraphView(self._pick_commit)
+        self.graph.setFont(mono)
+        self.graph_scroll.setWidget(self.graph)
+        split.addWidget(self.graph_scroll)
+        self.msg_view = QPlainTextEdit()
+        self.msg_view.setReadOnly(True)
+        self.msg_view.setFont(mono)
+        self.msg_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        split.addWidget(self.msg_view)
+        files_box = QWidget()
+        files_lay = QVBoxLayout(files_box)
+        files_lay.setContentsMargins(0, 0, 0, 0)
+        self._files_label = QLabel("Files")
+        files_lay.addWidget(self._files_label)
+        self.files_list = QListWidget()
+        self.files_list.setFont(mono)
+        self.files_list.currentRowChanged.connect(self._on_file_picked)
+        files_lay.addWidget(self.files_list, 1)
+        split.addWidget(files_box)
+        self.diff_view = QPlainTextEdit()
+        self.diff_view.setReadOnly(True)
+        self.diff_view.setFont(mono)
+        self.diff_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.diff_view.setPlaceholderText("Select a file to preview its diff.")
+        split.addWidget(self.diff_view)
+        split.setSizes([320, 90, 120, 240])
         lay.addWidget(split, 1)
 
         self._watcher = QFileSystemWatcher(self)
@@ -315,8 +669,22 @@ class GitPane(QWidget):
             self._show_note(err)
             return
         self._commits = rows
-        self._paint(rows, truncated)
-        self.detail_view.clear()
+        self._more_label.setText(f"{len(rows)}+ shown" if truncated else "")
+        self.graph.set_commits(rows)
+        if rows:
+            shas = {c["sha"] for c in rows}
+            keep = self._selected_sha if self._selected_sha in shas else rows[0]["sha"]
+            i = next(k for k, c in enumerate(rows) if c["sha"] == keep)
+            self._selected_sha = keep
+            self.graph.select(keep)
+            self._show_commit(i)
+        else:
+            self._selected_sha = None
+            self.graph.select(None)
+            self.msg_view.setPlainText("(no commits on this ref yet)")
+            self._files_label.setText("Files")
+            self.files_list.clear()
+            self.diff_view.clear()
 
     def _fill_branches(self, current: str, branches: list[str]):
         """Rebuild the filter, keeping the selection when it survives."""
@@ -384,89 +752,129 @@ class GitPane(QWidget):
             paper = None
         if not paper:
             return
-        for view in (self.history_view, self.detail_view):
+        for view in (self.msg_view, self.diff_view, self.files_list):
             pal = view.palette()
             pal.setColor(QPalette.Base, QColor(paper))
             view.setPalette(pal)
+        pal = self.graph.palette()
+        pal.setColor(QPalette.Window, QColor(paper))
+        self.graph.setPalette(pal)
+        self.graph.setAutoFillBackground(True)
 
     def _show_note(self, text: str):
         self._commits = []
-        self._block_commits = []
-        self.history_view.setPlainText(text)
-        self.detail_view.clear()
+        self._selected_sha = None
+        self._more_label.setText("")
+        self.graph.set_commits([])
+        self.msg_view.setPlainText(text)
+        self._files_label.setText("Files")
+        self.files_list.clear()
+        self.diff_view.clear()
 
-    def _visual_lines(self, rows: list[dict]) -> list[tuple[dict | None, str]]:
-        """Records -> paint lines: `git log --graph` separates commits
-        with graph-only connector rows (`|\\`, `|/`), so one record is
-        one node line plus zero or more connector lines above it."""
-        visual: list[tuple[dict | None, str]] = []
-        for idx, row in enumerate(rows):
-            parts = row["graph"].split("\n")
-            for g in parts[:-1]:
-                visual.append((None, g))
-            visual.append((idx, parts[-1] if parts else ""))
-        return visual
+    # ── inspector: message + files + diff ──
+    def _pick_commit(self, i: int):
+        if 0 <= i < len(self._commits):
+            self._selected_sha = self._commits[i]["sha"]
+            self.graph.select(self._selected_sha)
+            self._show_commit(i)
 
-    def _paint(self, rows: list[dict], truncated: bool):
-        """One node line per commit (+ graph-only connectors), then refs/meta."""
-        view = self.history_view
+    def _show_commit(self, i: int):
+        """Message header + file list; the first file's diff shows at once."""
+        if not self.repo or not (0 <= i < len(self._commits)):
+            return
+        c = self._commits[i]
+        body = read_commit_body(self.repo, c["sha"])
+        view = self.msg_view
         fg0 = view.palette().color(view.foregroundRole())
-        bg0 = view.palette().color(view.backgroundRole())
-        doc = view.document()
-        cur = QTextCursor(doc)
+        cur = QTextCursor(view.document())
         cur.beginEditBlock()
         try:
-            doc.clear()
-            visual = self._visual_lines(rows)
-            self._block_commits = [idx for idx, _g in visual]
-            for i, (idx, graph) in enumerate(visual):
-                if i > 0:
-                    cur.insertBlock()
-                if idx is None:
-                    fmt = QTextCharFormat()
-                    fmt.setForeground(cell_qcolor("cyan", fg0))
-                    cur.insertText(graph, fmt)
-                else:
-                    self._paint_row(cur, rows[idx], graph, fg0, bg0)
-            if truncated:
+            view.clear()
+            self._span(cur, c["subject"] or "(no message)", "default", fg0, bold=True)
+            cur.insertBlock()
+            self._span(
+                cur, f"{c['sha'][:12]} · {c['author']} · {c['date'][:10]}",
+                "gray", fg0,
+            )
+            if body:
                 cur.insertBlock()
-                fmt = QTextCharFormat()
-                fmt.setForeground(cell_qcolor("gray", fg0))
-                cur.insertText(f"… showing first {len(rows)} (narrow the branch filter)", fmt)
-            if not rows and not truncated:
-                self._block_commits = []
-                cur.insertText("(no commits on this ref yet)")
+                self._span(cur, body, "default", fg0)
         finally:
             cur.endEditBlock()
-
-    def _paint_row(self, cur, row: dict, graph: str, fg0, bg0):
-        def span(text: str, color: str, bold: bool = False):
-            fmt = QTextCharFormat()
-            fmt.setForeground(cell_qcolor(color, fg0))
-            fmt.setBackground(cell_qcolor("default", bg0))
-            if bold:
-                fmt.setFontWeight(QFont.Bold)
-            cur.insertText(text, fmt)
-
-        span(graph + " " if graph else "", "cyan")
-        span(row["subject"] or "(no message)", "default")
-        head, branches, tags = split_refs(row["refs"])
-        for name in head:
-            span(f"  ● {name}", "brightgreen", bold=True)
-        for name in branches:
-            span(f"  {name}", "yellow")
-        for name in tags:
-            span(f"  tag: {name}", "brightmagenta")
-        span(f"  {row['author']} · {row['date'][:10]}", "gray")
-
-    # ── detail ──
-    def _pick_row(self, block: int):
-        if 0 <= block < len(self._block_commits):
-            idx = self._block_commits[block]
-            if idx is not None and 0 <= idx < len(self._commits):
-                self._show_commit(self._commits[idx]["sha"])
-
-    def _show_commit(self, sha: str):
-        if not self.repo:
+        files, err = read_commit_files(self.repo, c["sha"])
+        self._files = files if err is None else []
+        self.files_list.clear()
+        if err is not None:
+            self._files_label.setText("Files")
+            bad = QListWidgetItem(err)
+            bad.setFlags(bad.flags() & ~Qt.ItemIsSelectable)
+            self.files_list.addItem(bad)
+            self.diff_view.clear()
             return
-        self.detail_view.setPlainText(read_commit(self.repo, sha))
+        self._files_label.setText(f"Files ({len(files)})")
+        fg = self.files_list.palette().color(self.files_list.foregroundRole())
+        for status, path, old in files:
+            label = f"{status}  {old} → {path}" if old else f"{status}  {path}"
+            item = QListWidgetItem(label)
+            item.setForeground(cell_qcolor(_STATUS_COLORS.get(status, "default"), fg))
+            self.files_list.addItem(item)
+        if files:
+            self.files_list.setCurrentRow(0)  # fires _on_file_picked -> diff
+        else:
+            empty = QListWidgetItem("(no files changed)")
+            empty.setFlags(empty.flags() & ~Qt.ItemIsSelectable)
+            self.files_list.addItem(empty)
+            self.diff_view.clear()
+
+    def _on_file_picked(self, row: int):
+        if 0 <= row < len(self._files):
+            self._show_file(row)
+
+    def _show_file(self, row: int):
+        """Unified diff of one file (vs first parent, empty tree at root)."""
+        if not self.repo or not (0 <= row < len(self._files)):
+            return
+        _status, path, _old = self._files[row]
+        parent = None
+        for c in self._commits:
+            if c["sha"] == self._selected_sha and c["parents"]:
+                parent = c["parents"][0]
+                break
+        self._paint_diff(read_file_diff(self.repo, self._selected_sha, parent, path))
+
+    @staticmethod
+    def _span(cur, text: str, color: str, fg0, bold: bool = False):
+        fmt = QTextCharFormat()
+        fmt.setForeground(cell_qcolor(color, fg0))
+        if bold:
+            fmt.setFontWeight(QFont.Bold)
+        cur.insertText(text, fmt)
+
+    def _paint_diff(self, text: str):
+        """Unified diff with line-class colors (headers/hunks/adds/dels)."""
+        view = self.diff_view
+        fg0 = view.palette().color(view.foregroundRole())
+        cur = QTextCursor(view.document())
+        cur.beginEditBlock()
+        try:
+            view.clear()
+            for n, line in enumerate(text.splitlines()):
+                if n > 0:
+                    cur.insertBlock()
+                if line.startswith("@@"):
+                    color, bold = "cyan", True
+                elif line.startswith("+") and not line.startswith("+++"):
+                    color, bold = "brightgreen", False
+                elif line.startswith("-") and not line.startswith("---"):
+                    color, bold = "brightred", False
+                elif line.startswith("\\"):
+                    color, bold = "gray", False
+                elif line.startswith(("diff --git", "index ", "--- ", "+++ ",
+                                        "new file", "deleted", "similarity",
+                                        "rename ", "old mode", "new mode")):
+                    color, bold = "default", True
+                else:
+                    color, bold = "default", False
+                self._span(cur, line or " ", color, fg0, bold)
+        finally:
+            cur.endEditBlock()
