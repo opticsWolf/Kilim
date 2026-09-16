@@ -167,6 +167,7 @@ class TerminalPane(QWidget):
         self._last_sig = None  # (total, cursor, start, rows) — idle-skip
         self._render_count = 0  # frames actually painted (tests/perf)
         self._paint_rows = -1  # viewport rows of the current document
+        self._force_full = False  # theme/visibility flip: rebuild, no surgery
         self._paint_cols: int | None = None  # width the cells were shaped for
         self._paint_start = None  # history offset of row 0 (scrolls full-repaint)
         self._cursor_at = None  # absolute (x, y) of the painted cursor
@@ -309,7 +310,7 @@ class TerminalPane(QWidget):
         self.view.setPalette(pal)
         self._fmt_cache.clear()  # defaults baked into formats changed too
         self._last_sig = None  # repaint with the new mapping
-        self._paint_rows = -1  # explicit shell colors are baked: full rebuild
+        self._force_full = True  # explicit shell colors are baked: rebuild, not shift
 
     def _render(self, snap):
         self._ensure_theme()
@@ -320,7 +321,7 @@ class TerminalPane(QWidget):
             # DECTCEM flip (?25l/h): the block must vanish/appear now, but
             # nothing else moved — force a rebuild so the row repaints.
             self._cursor_visible = self._modes.get("cursor_visible", True)
-            self._paint_rows = -1
+            self._force_full = True
         cwd = snap.get("cwd") or None
         if cwd != self._link_cwd:
             # Fresh base dir (cd, restart, new pane): cached hits resolved
@@ -377,12 +378,17 @@ class TerminalPane(QWidget):
         self._cells_start = snap["start"]
         caret = self._caret_cell(snap["start"], snap["cursor"], n)
         cols = snap.get("cols", self._paint_cols)
-        if self._paint_rows == snap["rows"] and self._paint_start == snap["start"]:
+        if (
+            not self._force_full
+            and self._paint_rows == snap["rows"]
+            and self._paint_start == snap["start"]
+        ):
             vis = sorted(r - lo for r in snap.get("dirty") or [] if lo <= r < lo + n)
             if vis:
                 self._paint_subset(rows, vis, fg0, bg0, caret)
         elif (
-            self._paint_start is not None
+            not self._force_full
+            and self._paint_start is not None
             and self._paint_cols is not None
             and cols == self._paint_cols
             and self._overlap(lo, n)
@@ -401,6 +407,7 @@ class TerminalPane(QWidget):
             self._render_count += 1
         else:
             self._paint_full(rows, fg0, bg0, caret)
+            self._force_full = False
             self._paint_rows = snap["rows"]
             self._paint_cols = cols
             self._paint_start = snap["start"]

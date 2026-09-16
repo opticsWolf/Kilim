@@ -795,6 +795,44 @@ def test_resize_applies_only_after_settle():
         app.processEvents()
 
 
+def test_terminal_theme_apply_repaints_idle_rows():
+    """Theme switch repaints existing rows on an idle pane.
+
+    Regression: the forced rebuild bypassed the same-window fast paths
+    (subset no-op, shift surgery), so an idle terminal kept its old
+    colors until new output, a scroll, or a resize repainted it."""
+    import time
+    from unittest.mock import patch
+
+    from PySide6.QtGui import QColor, QPalette
+
+    from kilim import theme_background
+    from kilim.qt_app import TerminalPane
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.06)
+        with patch.object(
+            TerminalPane, "_paint_full", autospec=True,
+            wraps=TerminalPane._paint_full,
+        ) as full:
+            w.apply_terminal_theme("Kilim Light")
+            for _ in range(10):
+                app.processEvents()
+                time.sleep(0.06)
+            assert full.call_count >= 1, "theme switch must rebuild, not shift"
+        paper = QColor(theme_background("Kilim Light"))
+        assert term.view.palette().color(QPalette.Base) == paper
+        frag = term.view.document().findBlockByNumber(0).begin()
+        assert frag.fragment().charFormat().background().color() == paper
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_term_pane_follows_terminal_theme():
     """Shell view tracks the terminal theme (palette + repaint marker)."""
     from PySide6.QtGui import QColor, QPalette

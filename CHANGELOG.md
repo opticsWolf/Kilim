@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.19: theme switch repaints idle terminals — the forced rebuild flag (v0.4.17) only guarded the shift path, so an idle pane hit the same-window subset no-op and kept stale colors until new output, a scroll, or a resize. All three paint branches honor it now.
 - v0.4.18: honor the hidden cursor — apps that hide the hardware cursor (DECTCEM ?25l) to draw their own no longer get Kilim's soft block blinking beside it: the snapshot modes carry cursor visibility (stitch already tracks ?25), both surfaces gate their cursor on it, ?25 flips force a repaint, and the Qt blink clock rests while hidden.
 - v0.4.17: qtermwidget-style paint economy — block surgery now covers every overlapping window move (wheel scrollback, height resizes), not just forward streaming — kept rows are never reinserted or re-detected. Cell formats are cached per style (was: rebuilt + color strings re-parsed per run per paint), and path detection skips rows that cannot hold a hit. Width changes still rebuild (cells reshape). Also fixed a test flake: mock await-lists record on the bridge thread, so late pre-patch awaits leaked into the window under load.
 - v0.4.16: instant-feeling resizes — resize drags coalesce: polls hold the settled grid (output keeps streaming into it) and one resize plus one rebuild land after 2 quiet polls, instead of a full rebuild every 60 ms. Anchoring needed no help — resize never rewraps scrollback, so frozen and tail positions survive unchanged.
