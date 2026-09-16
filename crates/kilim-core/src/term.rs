@@ -125,6 +125,9 @@ impl TermHandle {
     /// sgr_mouse, alt_screen, bell). dirty = history-absolute rows the
     /// screen reports changed (Konsole-style dirty set — frontends repaint
     /// only these). Draining events here bounds the log: nobody else does.
+    /// cwd = the shell's live directory (OSC 7/9;9), None until the first
+    /// report — callers fall back to the pane's configured cwd, then the
+    /// process cwd.
     pub async fn snapshot_tail(
         &self,
         rows: usize,
@@ -136,6 +139,7 @@ impl TermHandle {
         (usize, usize),
         (bool, bool, u16, bool, bool, bool),
         Vec<usize>,
+        Option<String>,
     ) {
         let mut screen = self.screen.lock().await;
         let total = screen.total_lines();
@@ -167,7 +171,8 @@ impl TermHandle {
             .into_iter()
             .map(|r| base.saturating_add(r))
             .collect();
-        (total, start, cells, cursor, modes, dirty)
+        let cwd = screen.cwd().map(str::to_string);
+        (total, start, cells, cursor, modes, dirty, cwd)
     }
 
     /// Drain pending low-frequency events (bell/title/cwd) without reading

@@ -86,6 +86,9 @@ click opens the file in a fresh dock:
 
 `path:line:col` suffixes scroll the viewer to the line, quoted paths may
 contain spaces, and `~`, `file://` and Git-Bash `/c/...` roots resolve.
+Relative paths resolve against the shell's live directory (OSC 7), else its
+configured start directory (Terminal menu / layout `cwd`), else the app
+directory.
 Closing a viewer dock disposes the pane; the **Files** menu keeps the last 20
 paths to reopen with one click.
 

@@ -81,7 +81,7 @@ def test_spawn_term_honors_cwd(tmp_path, monkeypatch):
         hit = None
         for _ in range(60):
             await asyncio.sleep(0.1)
-            _total, _start, cells, _cursor, _modes, _dirty = await core.snapshot_term(
+            _total, _start, cells, _cursor, _modes, _dirty, _cwd = await core.snapshot_term(
                 "t-cwd", 24, None
             )
             for row in cells:
@@ -97,6 +97,38 @@ def test_spawn_term_honors_cwd(tmp_path, monkeypatch):
     hit = asyncio.run(go())
     assert hit is not None, "marker output never arrived"
     assert str(tmp_path) in hit, hit
+
+
+def test_snapshot_cwd_falls_back_to_pane_spec(tmp_path, monkeypatch):
+    """No OSC 7 from stock shells: snapshot cwd is the configured dir."""
+    import asyncio
+    import shutil
+
+    ps = shutil.which("powershell.exe") or shutil.which("powershell")
+    if ps is None:
+        pytest.skip("no powershell for spawn test")
+    monkeypatch.chdir(tmp_path)
+    doc = {
+        "layout": {
+            "root": {"type": "pane", "pane_id": "t"},
+            "active": "t",
+            "theme": "Kilim Midnight",
+        },
+        "panes": [
+            {"id": "t", "title": "t", "kind": "term",
+             "cmd": ps, "cwd": str(tmp_path)},
+        ],
+    }
+    core = CoreSession(json.dumps(doc))
+
+    async def go():
+        await core.ensure_terms()
+        assert core.term_alive("t") is True
+        snap = await core.snapshot_term("t", 10, None)
+        await core.terminate_term("t", 1.0)
+        return snap[6]
+
+    assert asyncio.run(go()) == str(tmp_path)
 
 
 def test_spawn_term_adds_live_shell(tmp_path, monkeypatch):

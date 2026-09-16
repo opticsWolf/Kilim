@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
@@ -151,6 +152,7 @@ class TerminalPane(QWidget):
         self._set_badge = lambda on: None  # wired by the window (tab dot)
         self._wheel_accum = 0  # fractional scroll accumulation (smooth pads)
         self._link_cache: dict[str, list] = {}  # row text -> openable hits
+        self._link_cwd: str | None = None  # snapshot cwd hits resolved against
         self._open_path = lambda *_: None  # wired by the window
         self._poller = QTimer(self)
         self._poller.timeout.connect(self._poll)
@@ -202,7 +204,7 @@ class TerminalPane(QWidget):
     async def _snapshot(self, rows: int):
         # Alt screen has no scrollback: always track the tail there.
         anchor = None if (self._follow or self._modes.get("alt")) else self._start
-        total, start, cells, cursor, modes, dirty = await self.bridge.core.snapshot_term(
+        total, start, cells, cursor, modes, dirty, cwd = await self.bridge.core.snapshot_term(
             self.pane_id, rows, anchor
         )
         return {
@@ -213,6 +215,7 @@ class TerminalPane(QWidget):
             "rows": rows,
             "modes": _modes_dict(modes),
             "dirty": [int(r) for r in (dirty or [])],
+            "cwd": cwd,
         }
 
     def _grid(self) -> tuple[int, int]:
@@ -258,6 +261,12 @@ class TerminalPane(QWidget):
     def _render(self, snap):
         self._ensure_theme()
         self._modes = snap.get("modes") or _modes_dict(None)
+        cwd = snap.get("cwd") or None
+        if cwd != self._link_cwd:
+            # Fresh base dir (cd, restart, new pane): cached hits resolved
+            # against the old one, so drop them.
+            self._link_cwd = cwd
+            self._link_cache.clear()
         if self._modes.get("bell"):
             import time
 
@@ -290,12 +299,15 @@ class TerminalPane(QWidget):
         self._reapply_selection()
         self._badges(snap)
     def _paint(self, snap):
-        """Full rebuild or dirty-subset repaint (stitch-pty dirty rows).
+        """Full rebuild, tail scroll, or dirty-subset repaint.
 
-        Full when the viewport shape or history offset changed (resize,
-        scroll, first paint, theme switch); otherwise only the rows the
-        screen reports touched. No content comparison: the screen is the
-        source of truth, our old row-diff was re-deriving it."""
+        Full when the viewport shape or history offset jumped (resize,
+        first paint, theme switch, big scroll); tail scroll when the
+        window only slid forward (streaming output) — drop scrolled-off
+        head blocks, append fresh rows, no clear()+reflow flash; subset
+        when the window sits still (spinners, progress bars). No content
+        comparison: the screen is the source of truth, our old row-diff
+        was re-deriving it."""
         fg0 = self.view.palette().color(self.view.foregroundRole())
         bg0 = self.view.palette().color(self.view.backgroundRole())
         rows = snap["cells"]
@@ -307,6 +319,23 @@ class TerminalPane(QWidget):
             vis = sorted(r - lo for r in snap.get("dirty") or [] if lo <= r < lo + n)
             if vis:
                 self._paint_subset(rows, vis, fg0, bg0, caret)
+        elif (
+            self._paint_rows == snap["rows"]
+            and self._paint_start is not None
+            and 0 < snap["start"] - self._paint_start <= n
+        ):
+            k = snap["start"] - self._paint_start
+            self._paint_scroll(rows, k, fg0, bg0, caret)
+            # Dirty rows outside the appended range (a spinner that fired
+            # the same poll as the scroll) repaint after, like subset.
+            vis = sorted(
+                r - lo for r in snap.get("dirty") or []
+                if lo <= r < lo + n - k
+            )
+            if vis:
+                self._paint_subset(rows, vis, fg0, bg0, caret, count=False)
+            self._paint_start = snap["start"]
+            self._render_count += 1
         else:
             self._paint_full(rows, fg0, bg0, caret)
             self._paint_rows = snap["rows"]
@@ -321,7 +350,9 @@ class TerminalPane(QWidget):
         """Openable paths in one row text, cached per text.
 
         Rows repaint constantly; detection runs in Rust
-        (`CoreSession.detect_paths`, shared with the TUI) and only
+        (`CoreSession.detect_paths_in`, shared with the TUI) against the
+        term's snapshot cwd — the shell's live directory, else its
+        configured start dir, else the app directory — and only
         `code`/`markdown`/`html` kinds are links — binary and missing
         paths get no underline and no click."""
         hits = self._link_cache.get(text)
@@ -329,7 +360,7 @@ class TerminalPane(QWidget):
             try:
                 hits = [
                     h
-                    for h in self.bridge.core.detect_paths(text)
+                    for h in self.bridge.core.detect_paths_in(text, self._link_cwd or os.getcwd())
                     if h[5] in ("code", "markdown", "html")
                 ]
             except (AttributeError, ValueError):
@@ -414,6 +445,44 @@ class TerminalPane(QWidget):
         finally:
             cur.endEditBlock()
         self._cursor_at = None  # document is new: reposition unconditionally
+
+    def _paint_scroll(self, rows, k, fg0, bg0, caret=None):
+        """Tail scroll by k: drop k head blocks, append the k fresh rows.
+
+        Same visible result as a full rebuild when the window only slid
+        forward — without the clear()+reflow flash at 16fps on long
+        sessions. Block i always shows absolute line cells_start+i, so
+        selection anchors and cursor tracking (absolute coords) survive
+        untouched; baked caret art scrolls along with its row, and
+        `_cursor_to` (after `_paint` in `_render`) repaints on real moves.
+        """
+        doc = self.view.document()
+        cur = QTextCursor(doc)
+        cur.beginEditBlock()
+        try:
+            # Drop the k scrolled-off head blocks.
+            cur.movePosition(QTextCursor.Start)
+            end = QTextCursor(doc)
+            end.movePosition(QTextCursor.Start)
+            end.movePosition(QTextCursor.NextBlock, QTextCursor.MoveAnchor, k)
+            cur.setPosition(end.position(), QTextCursor.KeepAnchor)
+            cur.removeSelectedText()
+            # Append the k fresh tail rows into the trailing empty block.
+            n = len(rows)
+            tail = QTextCursor(doc)
+            tail.movePosition(QTextCursor.End)
+            for j, row in enumerate(rows[n - k:]):
+                self._insert_runs(
+                    tail,
+                    row,
+                    fg0,
+                    bg0,
+                    caret[1] if caret and caret[0] == n - k + j else None,
+                    self._link_cells(row),
+                )
+                tail.insertBlock()
+        finally:
+            cur.endEditBlock()
 
     def _paint_subset(self, rows, indices, fg0, bg0, caret=None, count=True):
         """Rewrite exactly the given visible rows (dirty set).

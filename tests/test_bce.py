@@ -41,7 +41,7 @@ def test_colored_block_keeps_its_background():
         rows = None
         for _ in range(60):
             await asyncio.sleep(0.1)
-            _total, _start, cells, _cursor, _modes, _dirty = await core.snapshot_term(
+            _total, _start, cells, _cursor, _modes, _dirty, _cwd = await core.snapshot_term(
                 "probe", 24, None
             )
             if any("plain default row" in "".join(c[0] for c in row) for row in cells):

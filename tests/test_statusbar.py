@@ -141,6 +141,34 @@ def test_status_bar_is_laid_out_and_has_no_resize_grip(scene):
         app.processEvents()
 
 
+def test_relative_paths_resolve_against_snapshot_cwd(scene, tmp_path):
+    """Relative hits resolve where the shell is, not where the app is."""
+    src = tmp_path / "m.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    app, w = _window(*scene)
+    try:
+        _settle(app)
+        term = next(iter(w.term_panes.values()))
+        term._poller.stop()
+        # Snapshot says the shell lives in tmp: m.py linkifies with :line.
+        snap = _fake_snap(["see m.py:2 here"])
+        snap["cwd"] = str(tmp_path)
+        term._render(snap)
+        assert term._link_cwd == str(tmp_path)
+        (hit,) = term._links_for_text("see m.py:2 here")
+        _s, _e, path, line, _col, kind = hit
+        assert kind == "code" and line == 2 and path.endswith("m.py")
+        # Same text with no snapshot cwd falls back to the app dir, where
+        # m.py does not exist: no link (yesterday's miss, by design now).
+        snap2 = _fake_snap(["see m.py:2 here"])
+        term._render(snap2)
+        assert term._link_cwd is None
+        assert term._links_for_text("see m.py:2 here") == []
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_status_bar_hover_follows_the_link_under_the_mouse(scene, tmp_path):
     """A real mouse move over a path shows the target; moving off clears it."""
     from PySide6.QtCore import QPoint

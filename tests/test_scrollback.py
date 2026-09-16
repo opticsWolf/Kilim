@@ -183,7 +183,7 @@ def test_right_click_paste_reaches_shell():
         for _ in range(40):
             app.processEvents()
             time.sleep(0.06)
-            total, start, cells, _cursor, _modes, _dirty = w.bridge.call(
+            total, start, cells, _cursor, _modes, _dirty, _cwd = w.bridge.call(
                 lambda: w.bridge.core.snapshot_term("term1", 60, None)
             )
             blob = "".join("".join(t for t, _, _, _ in row) for row in cells)
@@ -777,7 +777,7 @@ def test_snapshot_carries_dec_modes():
     """snapshot_term reports app-cursor/bracketed/mouse/sgr/alt flags."""
     app, w = _window()
     try:
-        total, start, cells, cursor, modes, dirty = w.bridge.call(
+        total, start, cells, cursor, modes, dirty, cwd = w.bridge.call(
             lambda: w.bridge.core.snapshot_term("term1", 10, None)
         )
         app_cursor, bracketed, mouse, sgr, alt, bell = modes
@@ -916,6 +916,42 @@ def test_incremental_repaint_touches_one_row():
         # Identical re-render: idle, no touch.
         term._render(_fake_snap(changed, total=11))
         assert term._render_count == base + 1
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_tail_scroll_appends_without_full_rebuild():
+    """Streaming output scrolls blocks; clear()+rebuild is for jumps."""
+    from unittest.mock import patch
+
+    from kilim.qt_app import TerminalPane
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._render(_fake_snap([["aa"], ["bb"], ["cc"]]))
+        doc = term.view.document()
+        assert doc.blockCount() == 4  # 3 rows + trailing empty
+        base = term._render_count
+        with patch.object(
+            TerminalPane, "_paint_full", autospec=True,
+            wraps=TerminalPane._paint_full,
+        ) as full:
+            # Tail slides one: bb/cc stay, dd appends, aa drops.
+            term._render(_fake_snap([["bb"], ["cc"], ["dd"]], start=1, total=4))
+            assert full.call_count == 0
+            assert term._render_count == base + 1
+            assert [doc.findBlockByNumber(i).text() for i in range(3)] == [
+                "bb", "cc", "dd",
+            ]
+            assert doc.blockCount() == 4
+            # A jump past the window still rebuilds fully.
+            term._render(_fake_snap([["xx"], ["yy"], ["zz"]], start=10, total=13))
+            assert full.call_count == 1
+            assert [doc.findBlockByNumber(i).text() for i in range(3)] == [
+                "xx", "yy", "zz",
+            ]
     finally:
         w.close()
         app.processEvents()

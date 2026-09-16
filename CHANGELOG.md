@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.14: calmer terminal repaints — streaming output now scrolls blocks (drop head, append tail) instead of clear()+rebuild every poll, so long sessions stop flashing; jumps still rebuild. Relative paths linkify against the shell's live directory (OSC 7 via the snapshot), else its configured start dir, else the app dir — the Start Directory menu now also fixes relative detection for shells without OSC 7.
 - v0.4.13: start directory modes — each shell chooses App default (inherit Kilim's directory), Shell default (home), or a picked directory, radio-checked per shell in the Start Directory submenu; every new terminal starts in its shell's setting. v0.4.12 bare-string sidecars still read.
 - v0.4.12: shell start directories — the Terminal menu gains Start Directory: pick where each shell launches (sidecar-stored, resettable, inherited cwd when unset), threaded through core spawn (layout panes accept a `cwd` key too, restarts keep it, missing dirs fall back silently). Themes submenus renamed Lace — App, Code — Syntax.
 - v0.4.11: separate terminal theme — the Themes menu is Lace / Code / Terminal: one Code apply sets code + Markdown fences together (both keys persist equal, so they can never diverge), terminals theme on their own track persisted as `terminal_theme`, and a Lace choice themes every part at once. The TUI cycles both together on Ctrl+T too. Fresh launch (or a sidecar restore) still reunifies everything behind the Lace selection.

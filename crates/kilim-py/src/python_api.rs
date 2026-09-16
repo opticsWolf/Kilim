@@ -59,6 +59,21 @@ impl CoreSession {
             .collect()
     }
 
+    /// `detect_paths` against an explicit base dir: the Qt surface passes
+    /// each term's snapshot cwd (live shell dir, else the pane's
+    /// configured cwd, else the app dir) so relative paths resolve where
+    /// the shell is, not where the app was launched.
+    fn detect_paths_in(
+        &self,
+        line: &str,
+        cwd: &str,
+    ) -> Vec<(usize, usize, String, Option<usize>, Option<usize>, String)> {
+        kilim_core::paths::detect_paths_in(line, std::path::Path::new(cwd))
+            .into_iter()
+            .map(|h| (h.start, h.end, h.path, h.line, h.col, h.kind.as_str().to_string()))
+            .collect()
+    }
+
     /// Read a text file with the viewer's decoding rules (UTF-8, BOM'd
     /// UTF-16/32, cp1252 fallback) — the html pane uses this so an
     /// 8-bit-encoded page still renders.
@@ -327,7 +342,23 @@ impl CoreSession {
                 let s = inner.read().unwrap();
                 s.terms.get(&pane_id).cloned().ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("no live term '{pane_id}'")))?
             };
-            Ok(h.snapshot_tail(rows, anchor).await)
+            let mut snap = h.snapshot_tail(rows, anchor).await;
+            // No live dir (shells without OSC 7 never report): fall back
+            // to the pane's configured cwd (layout key / launch spec),
+            // so menu-set start dirs fix relative detection too.
+            if snap.6.is_none() {
+                let spec = {
+                    let s = inner.read().unwrap();
+                    s.panes.get(&pane_id).and_then(|p| match &p.kind {
+                        kilim_core::PaneKind::Term { cwd, .. } if !cwd.is_empty() => {
+                            Some(cwd.clone())
+                        }
+                        _ => None,
+                    })
+                };
+                snap.6 = spec;
+            }
+            Ok(snap)
         })
     }
 

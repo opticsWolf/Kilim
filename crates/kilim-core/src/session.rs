@@ -205,6 +205,7 @@ impl Session {
     /// `anchor=None` follows the tail; `Some(a)` holds scrollback position.
     /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse,
     /// alt_screen, bell). dirty = history-absolute changed rows.
+    /// cwd = live shell dir (OSC 7/9;9), None until the first report.
     pub async fn snapshot_term(
         &self,
         pane_id: &str,
@@ -218,6 +219,7 @@ impl Session {
             (usize, usize),
             (bool, bool, u16, bool, bool, bool),
             Vec<usize>,
+            Option<String>,
         ),
         String,
     > {
