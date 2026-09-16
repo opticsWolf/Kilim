@@ -270,6 +270,13 @@ fn make_hit(text: &str, start: usize, cwd: &Path) -> Option<PathHit> {
     let start = start + (text.chars().count() - trimmed.chars().count());
     let trimmed = trimmed.trim_end();
     let t = trimmed.trim_end_matches(['.', ':', '=', '+', '&', '#', '@', '%', '$', '-']);
+    // pytest/rust `path::test` node ids: link the path part, drop the
+    // test suffix. `::` never occurs in a real path (unlike the drive
+    // and :line:col colons), so the head is always the file.
+    let t = match t.split_once("::") {
+        Some((head, _)) if !head.is_empty() => head,
+        _ => t,
+    };
     let (path_text, line, col) = split_line_col(t);
     if !plausible(path_text) {
         return None;
@@ -321,15 +328,26 @@ fn colon_number(s: &str) -> Option<(&str, usize)> {
 }
 
 /// Does this text look like a file path? Either it carries a separator
-/// (`src/main.rs`, `C:\x`, `and/or`) or ends in an extension-ish suffix
-/// (`Makefile.txt`, `release-1.2`). Everything else is prose. Existence is
-/// deliberately *not* consulted here: classification filters false
-/// positives once, and the answer is cached.
+/// (`src/main.rs`, `C:\x`, `and/or`), ends in an extension-ish suffix
+/// (`Makefile.txt`, `release-1.2`), or is a bare known-text name
+/// (`Makefile`, `README`) — the last only linkifies when such a file
+/// actually exists, since resolution still gates every candidate.
+/// Existence is deliberately *not* consulted here: classification filters
+/// false positives once, and the answer is cached.
 fn plausible(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
     if s.contains('/') || s.contains('\\') {
+        return true;
+    }
+    // Bare names of famous text files (extensionless by convention).
+    const BARE_TEXT_NAMES: &[&str] = &[
+        "makefile", "gnumakefile", "dockerfile", "containerfile",
+        "license", "licence", "copying", "notice", "authors",
+        "readme", "changelog", "changes", "news", "todo", "version",
+    ];
+    if BARE_TEXT_NAMES.iter().any(|n| s.eq_ignore_ascii_case(n)) {
         return true;
     }
     let name = s.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(s);
@@ -358,6 +376,14 @@ fn is_run_start(c: char) -> bool {
 mod tests {
     use super::*;
 
+    /// Serializes cache-touching tests: the kind cache is a shared
+    /// static and `clear_cache()` in one thread voids another's
+    /// in-flight assertions (notably the cache-survival test).
+    fn lock_cache() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("kilim-paths-{name}"));
         std::fs::create_dir_all(&d).unwrap();
@@ -374,6 +400,7 @@ mod tests {
 
     #[test]
     fn finds_absolute_path_with_line_and_col() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("abs");
         std::fs::write(d.join("main.rs"), "fn main() {}\n").unwrap();
@@ -390,6 +417,7 @@ mod tests {
 
     #[test]
     fn relative_path_resolves_against_cwd() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("rel");
         std::fs::create_dir_all(d.join("src")).unwrap();
@@ -404,6 +432,7 @@ mod tests {
 
     #[test]
     fn trims_trailing_punctuation() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("trim");
         std::fs::write(d.join("notes.md"), "# n\n").unwrap();
@@ -416,6 +445,7 @@ mod tests {
 
     #[test]
     fn quoted_paths_may_contain_spaces() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("quote");
         let spaced = d.join("my docs");
@@ -430,6 +460,7 @@ mod tests {
 
     #[test]
     fn routes_viewers_by_extension() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("route");
         std::fs::write(d.join("page.html"), "<p>x</p>\n").unwrap();
@@ -451,6 +482,7 @@ mod tests {
 
     #[test]
     fn binary_files_are_not_openable() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("binary");
         std::fs::write(d.join("blob.dat"), [0u8, 1, 2, 0, 255, 10]).unwrap();
@@ -466,6 +498,7 @@ mod tests {
 
     #[test]
     fn bom_utf16_text_stays_openable() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("utf16");
         let mut bytes = vec![0xff, 0xfe]; // UTF-16 LE BOM
@@ -478,6 +511,7 @@ mod tests {
 
     #[test]
     fn missing_paths_are_reported_but_not_openable() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("missing");
         let line = "no such file ghost/thing.txt here";
@@ -490,6 +524,7 @@ mod tests {
 
     #[test]
     fn urls_and_prose_do_not_become_links() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("prose");
         for line in [
@@ -509,6 +544,7 @@ mod tests {
 
     #[test]
     fn file_urls_resolve() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("fileurl");
         std::fs::write(d.join("u.txt"), "x\n").unwrap();
@@ -521,6 +557,7 @@ mod tests {
 
     #[test]
     fn read_text_handles_encodings() {
+        let _guard = lock_cache();
         let d = dir("readtext");
         let utf8 = d.join("u8.txt");
         std::fs::write(&utf8, "héllo\n").unwrap();
@@ -544,6 +581,7 @@ mod tests {
 
     #[test]
     fn kinds_are_cached_and_clearable() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("cache");
         let f = d.join("c.txt");
@@ -560,6 +598,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn msys_and_tilde_roots_expand() {
+        let _guard = lock_cache();
         clear_cache();
         let d = dir("msys");
         let f = d.join("m.txt");
@@ -568,6 +607,115 @@ mod tests {
         let msys = format!("/{}/{}", s[0..1].to_lowercase(), &s[2..]);
         let hits = detect_paths_in(&format!("at {msys} here"), &d);
         assert_eq!(hits.len(), 1, "hits: {hits:?}");
+        assert_eq!(hits[0].kind, FileKind::Code);
+    }
+
+    #[test]
+    fn test_ids_link_the_path_part() {
+        let _guard = lock_cache();
+        // pytest `file.py::test_x` / `file.py::Class::test_y` (and rust
+        // `path::test`): the file linkifies, the id suffix is dropped.
+        clear_cache();
+        let d = dir("testids");
+        std::fs::write(d.join("test_k.py"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let line = "FAILED test_k.py::test_it and test_k.py::Cls::test_that ok src/main.rs::t ok";
+        let hits = detect_paths_in(line, &d);
+        let got: Vec<(String, FileKind)> = hits
+            .iter()
+            .map(|h| (slice(line, h), h.kind))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("test_k.py".to_string(), FileKind::Code),
+                ("test_k.py".to_string(), FileKind::Code),
+                ("src/main.rs".to_string(), FileKind::Code),
+            ],
+            "hits: {hits:?}"
+        );
+        assert!(hits.iter().all(|h| h.line.is_none()));
+    }
+
+    #[test]
+    fn bare_known_text_names_open() {
+        let _guard = lock_cache();
+        // Extensionless by convention (Makefile, README, ...): linkify
+        // when such a file exists next to the shell, stay quiet otherwise.
+        clear_cache();
+        let d = dir("barenames");
+        std::fs::write(d.join("Makefile"), "all:\n").unwrap();
+        std::fs::write(d.join("README"), "hi\n").unwrap();
+        let hits = detect_paths_in("run Makefile then see README plz", &d);
+        let got: Vec<(String, FileKind)> = hits
+            .iter()
+            .map(|h| (slice("run Makefile then see README plz", h), h.kind))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Makefile".to_string(), FileKind::Code),
+                ("README".to_string(), FileKind::Code),
+            ],
+            "hits: {hits:?}"
+        );
+        // Same words, no such files: reported missing, never openable.
+        clear_cache();
+        let empty = dir("bareempty");
+        let stale = detect_paths_in("run Makefile then see README plz", &empty);
+        assert_eq!(stale.len(), 2);
+        assert!(stale.iter().all(|h| !h.kind.openable()));
+    }
+
+    #[test]
+    fn everyday_text_extensions_open_as_code() {
+        let _guard = lock_cache();
+        // .txt/.json/.yaml/.toml/.rs/.py and the usual programming
+        // languages: any existing text file linkifies (FilePane renders
+        // unknown syntaxes plain, so mordant coverage never gates opening).
+        clear_cache();
+        let d = dir("extsweep");
+        let exts = [
+            "txt", "json", "yaml", "yml", "toml", "ini", "cfg", "log",
+            "rs", "py", "js", "ts", "jsx", "tsx", "go", "java",
+            "c", "h", "cpp", "hpp", "cs", "rb", "php", "swift",
+            "kt", "scala", "lua", "r", "pl", "sh", "ps1", "bat",
+            "sql", "xml", "css", "scss", "vue", "md",
+        ];
+        let mut line = String::from("see");
+        for ext in exts {
+            let name = format!("f.{ext}");
+            std::fs::write(d.join(&name), "x\n").unwrap();
+            line.push(' ');
+            line.push_str(&name);
+        }
+        let hits = detect_paths_in(&line, &d);
+        assert_eq!(hits.len(), exts.len(), "hits: {hits:?}");
+        for h in &hits {
+            let want = if h.raw.ends_with(".md") {
+                FileKind::Markdown
+            } else {
+                FileKind::Code
+            };
+            assert_eq!(h.kind, want, "{}", h.raw);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn backslash_drive_paths_with_lines_open() {
+        let _guard = lock_cache();
+        // Native `C:\dir\file:line:col` form, straight from tracebacks.
+        clear_cache();
+        let d = dir("bslash");
+        std::fs::write(d.join("w.py"), "x = 1\n").unwrap();
+        let raw = format!(r"{}\w.py:7:2", d.to_string_lossy());
+        let line = format!("File {raw}, in run");
+        let hits = detect_paths_in(&line, &d);
+        assert_eq!(hits.len(), 1, "hits: {hits:?}");
+        assert_eq!(slice(&line, &hits[0]), raw.trim_end_matches(":7:2"));
+        assert_eq!((hits[0].line, hits[0].col), (Some(7), Some(2)));
         assert_eq!(hits[0].kind, FileKind::Code);
     }
 }

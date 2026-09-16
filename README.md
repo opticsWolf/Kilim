@@ -86,6 +86,8 @@ click opens the file in a fresh dock:
 
 `path:line:col` suffixes scroll the viewer to the line, quoted paths may
 contain spaces, and `~`, `file://` and Git-Bash `/c/...` roots resolve.
+pytest `::test` suffixes link the path part, and bare `Makefile`/`README`
+style names open when such a file exists.
 Relative paths resolve against the shell's live directory (OSC 7), else its
 configured start directory (Terminal menu / layout `cwd`), else the app
 directory.

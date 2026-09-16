@@ -169,6 +169,26 @@ def test_relative_paths_resolve_against_snapshot_cwd(scene, tmp_path):
         app.processEvents()
 
 
+def test_absolute_and_testid_paths_linkify(scene, tmp_path):
+    """Full paths (C:\\.., C:/..) and pytest ::ids link with :line."""
+    src = tmp_path / "w.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    app, w = _window(*scene)
+    try:
+        _settle(app)
+        term = next(iter(w.term_panes.values()))
+        term._poller.stop()
+        pls = str(src).replace("\\", "/")
+        snap = _fake_snap([f"File {src}:3 and {pls}::test_x done"])
+        term._render(snap)
+        hits = term._links_for_text(f"File {src}:3 and {pls}::test_x done")
+        assert [(h[5], h[3]) for h in hits] == [("code", 3), ("code", None)]
+        assert all(h[2].endswith("w.py") for h in hits)
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_status_bar_hover_follows_the_link_under_the_mouse(scene, tmp_path):
     """A real mouse move over a path shows the target; moving off clears it."""
     from PySide6.QtCore import QPoint
