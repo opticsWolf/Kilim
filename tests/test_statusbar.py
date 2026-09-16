@@ -38,7 +38,7 @@ def _settle(app, n=12):
         app.processEvents()
 
 
-def _fake_snap(rows, cursor=(0, 0)):
+def _fake_snap(rows, cursor=(0, 0), cols=80):
     cells = [[(t, "default", "default", 0) for t in row] for row in rows]
     return {
         "cells": cells,
@@ -46,6 +46,7 @@ def _fake_snap(rows, cursor=(0, 0)):
         "start": 0,
         "total": len(rows),
         "rows": len(rows),
+        "cols": cols,
         "modes": {"app_cursor": False, "bracketed": False, "mouse": 0,
                   "sgr": False, "alt": False, "bell": False},
         "dirty": [],

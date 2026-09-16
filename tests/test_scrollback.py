@@ -728,7 +728,11 @@ def test_resize_retry_on_failure():
 
 
 def test_resize_applies_only_after_settle():
-    """Resize drag: snapshots hold the settled grid, one resize lands."""
+    """Resize drag: polls hold the settled grid, one resize lands.
+
+    Fully synchronous (fake bridge, stopped poller): the grid shapes are
+    the only moving part, so no timer slip can intrude."""
+    import concurrent.futures
     from unittest.mock import patch
 
     from kilim.qt_app import TerminalPane
@@ -737,19 +741,12 @@ def test_resize_applies_only_after_settle():
     try:
         term = _term(w)
         term._poller.stop()
-        for _ in range(20):  # drain any in-flight poll snapshot
-            app.processEvents()
-            time.sleep(0.02)
-            if term._pending is None or term._pending.done():
-                break
         term._pending = None
         term._applied_grid = None
         term._pending_grid = None
         term._pending_same = 0
         term._resize_pending = None
         shapes = [(40, 100)] + [(41 + i, 100) for i in range(4)] + [(45, 100)] * 3
-        # Function, not an iterator: a queued poller timeout from before
-        # stop() may slip one extra _poll in; extras repeat the last shape.
         calls = {"n": 0}
 
         def fake_grid():
@@ -757,24 +754,42 @@ def test_resize_applies_only_after_settle():
             calls["n"] += 1
             return shapes[i]
 
+        seen_rows: list = []
+        real_snapshot = TerminalPane._snapshot
+
+        def _rec_snapshot(self, rows, cols):
+            seen_rows.append(rows)
+            return real_snapshot(self, rows, cols)
+
+        def fake_submit(make_coro):
+            # Hermetic: nothing reaches the core; completed futures keep
+            # _poll's state machine moving exactly as live ones would.
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            try:
+                make_coro().close()  # created, never awaited: no side effects
+            except Exception:  # noqa: BLE001 - not a coroutine factory
+                pass
+            fut.set_result(None)
+            return fut
+
         with (
             patch.object(TerminalPane, "_grid", side_effect=fake_grid),
-            patch.object(
-                TerminalPane, "_snapshot", autospec=True,
-                wraps=TerminalPane._snapshot,
-            ) as snap,
+            patch.object(TerminalPane, "_snapshot", _rec_snapshot),
+            patch.object(term.bridge, "submit", side_effect=fake_submit),
         ):
             for _ in range(len(shapes)):
                 term._poll()
-                app.processEvents()
-                time.sleep(0.07)
-        rows_seen = [c.args[1] for c in snap.await_args_list]
+        # (Recorded at call time by _rec_snapshot: mock await/call lists
+        # are unreliable here — real coroutines await on the bridge thread,
+        # so pre-patch snapshots can record inside the window under load.)
+        rows_seen = seen_rows
         assert rows_seen, "expected snapshots to run"
         # Drag intermediates (41-44) never reshape a snapshot: polls hold
         # the settled grid, then move to the new one once stable.
-        assert not (set(rows_seen) - {40, 45}), rows_seen
+        assert set(rows_seen) == {40, 45}, rows_seen
+        assert rows_seen.count(45) == 1, rows_seen  # one new-shape poll
         assert term._applied_grid == (45, 100)  # then applied once stable
-        assert term._resize_pending == (45, 100)  # exactly one resize fired
+        assert term._resize_pending == (45, 100)  # resize follows the settle
     finally:
         w.close()
         app.processEvents()
@@ -871,7 +886,7 @@ def test_arrow_and_mouse_encodings():
     assert _char_to_term_col("é", 2) == 1
 
 
-def _fake_snap(rows, start=0, total=None, cursor=(0, 0), dirty=None):
+def _fake_snap(rows, start=0, total=None, cursor=(0, 0), dirty=None, cols=80):
     cells = [[(t, "default", "default", 0) for t in row] for row in rows]
     return {
         "cells": cells,
@@ -879,6 +894,7 @@ def _fake_snap(rows, start=0, total=None, cursor=(0, 0), dirty=None):
         "start": start,
         "total": total if total is not None else len(rows),
         "rows": len(rows),
+        "cols": cols,
         "modes": {"app_cursor": False, "bracketed": False, "mouse": 0,
                   "sgr": False, "alt": False, "bell": False},
         "dirty": list(dirty) if dirty else [],
@@ -1004,6 +1020,65 @@ def test_tail_scroll_appends_without_full_rebuild():
             assert full.call_count == 1
             assert [doc.findBlockByNumber(i).text() for i in range(3)] == [
                 "xx", "yy", "zz",
+            ]
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_scroll_back_and_height_resize_shift_without_rebuild():
+    """Wheel scrollback, height grow/shrink: block surgery, no rebuild."""
+    from unittest.mock import patch
+
+    from kilim.qt_app import TerminalPane
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._render(_fake_snap([["aa"], ["bb"], ["cc"]]))
+        doc = term.view.document()
+        base = term._render_count
+        with patch.object(
+            TerminalPane, "_paint_full", autospec=True,
+            wraps=TerminalPane._paint_full,
+        ) as full:
+            # Wheel up one: 00 prepends, cc drops off the tail.
+            term._render(_fake_snap([["00"], ["aa"], ["bb"]], start=-1, total=4))
+            assert full.call_count == 0
+            assert [doc.findBlockByNumber(i).text() for i in range(3)] == [
+                "00", "aa", "bb",
+            ]
+            assert doc.blockCount() == 4
+            # Height grow at the tail: dd appends, shared rows untouched.
+            term._render(_fake_snap([["aa"], ["bb"], ["cc"], ["dd"]], start=0, total=4))
+            assert full.call_count == 0
+            assert [doc.findBlockByNumber(i).text() for i in range(4)] == [
+                "aa", "bb", "cc", "dd",
+            ]
+            assert doc.blockCount() == 5
+            # Height shrink at the tail: head blocks drop, tail kept.
+            term._render(_fake_snap([["cc"], ["dd"]], start=2, total=4))
+            assert full.call_count == 0
+            assert [doc.findBlockByNumber(i).text() for i in range(2)] == [
+                "cc", "dd",
+            ]
+            assert doc.blockCount() == 3
+            assert term._render_count == base + 3
+            # Width change, same shape: subset repaints the dirty rows
+            # with the reshaped cells (no rebuild needed, count matches).
+            term._render(_fake_snap([["CC"], ["DD"]], start=2, total=4,
+                                     cols=120, dirty=[2, 3]))
+            assert full.call_count == 0
+            assert [doc.findBlockByNumber(i).text() for i in range(2)] == [
+                "CC", "DD",
+            ]
+            # Width change plus new shape: cells reshaped and the block
+            # count moved — only a full rebuild lines those up.
+            term._render(_fake_snap([["CC"], ["DD"], ["EE"]], start=2,
+                                     total=5, cols=120, dirty=[2, 3, 4]))
+            assert full.call_count == 1
+            assert [doc.findBlockByNumber(i).text() for i in range(3)] == [
+                "CC", "DD", "EE",
             ]
     finally:
         w.close()
