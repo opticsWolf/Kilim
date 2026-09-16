@@ -337,6 +337,47 @@ class KilimWindow(FramelessLaceMainWindow):
             return self.git_pane.graph
         return None
 
+    def _term_pid_of(self, w) -> str | None:
+        """Terminal pane id owning the widget (focus target -> pane)."""
+        while w is not None:
+            for pid, pane in self.term_panes.items():
+                if w is pane:
+                    return pid
+            try:
+                w = w.parentWidget()
+            except RuntimeError:
+                return None
+        return None
+
+    def _follow_terminal_focus(self, widget) -> None:
+        """Git dock follows the focused terminal's repo (viewers keep last).
+
+        Only when the dock is open and the focus lands in a *terminal* in
+        a different repo — same-repo refocus and viewer/git focus never
+        re-point (and never pay a snapshot). Snapshot failures (dead
+        shell, closing) keep the current repo."""
+        import os
+
+        from kilim.git_pane import repo_root
+
+        pane = self.git_pane
+        if pane is None:
+            return
+        pid = self._term_pid_of(widget)
+        if pid is None:
+            return
+        try:
+            snap = self.bridge.call(lambda: self.bridge.core.snapshot_term(pid, 1, None))
+        except Exception:  # noqa: BLE001 — keep the current repo
+            return
+        cwd = snap[6] if len(snap) > 6 else None
+        if not cwd:
+            return
+        root = repo_root(cwd)
+        current = pane.repo
+        if root and os.path.normcase(root) != os.path.normcase(current or ""):
+            pane.set_repo(root)
+
     def _claim_pane_focus(self):
         """Focus the active pane unless the user focused pane content.
 
@@ -367,6 +408,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self._refresh_status_pane()  # status bar tracks the focused pane
         try:
             if self._inside_panes(new):
+                self._follow_terminal_focus(new)
                 return
         except RuntimeError:
             return
@@ -978,6 +1020,8 @@ class KilimWindow(FramelessLaceMainWindow):
         self.bridge.core.set_markdown_theme(name)
         for pane in self.file_panes.values():
             pane.refresh()
+        if self.git_pane is not None:
+            self.git_pane.refresh_theme()
         # No deferral (unlike the Lace path below): the app palette does
         # not change here, so sampling it now reads current colors.
         for pane in self.md_panes.values():
@@ -1013,6 +1057,8 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.terminal_theme = syntect
                 for pane in self.file_panes.values():
                     pane.refresh()
+                if self.git_pane is not None:
+                    self.git_pane.refresh_theme()
                 for pane in self.term_panes.values():
                     pane.set_terminal_theme(syntect)
                 # Markdown refresh is deferred: the theme bridge pushes the

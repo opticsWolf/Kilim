@@ -56,7 +56,8 @@ def repo(tmp_path):
     _git(root, "commit", "-m", "feature work", "-m", "the body")
     _git(root, "checkout", "main")
     (root / "d.txt").write_text("four\n")
-    _git(root, "add", "d.txt")
+    (root / "f.py").write_text('def hello(name):\n    return f"hi {name}"\n')
+    _git(root, "add", "d.txt", "f.py")
     _git(root, "commit", "-m", "third commit")
     _git(root, "merge", "--no-ff", "-m", "merge feature", "feature")
     _git(root, "tag", "v0.1")
@@ -337,6 +338,167 @@ def test_git_branch_filter_narrows_rows(scene, repo):
         assert len(pane._commits) == 3
         subjects = [c["subject"] for c in pane._commits]
         assert not any(s in ("merge feature", "third commit") for s in subjects)
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_git_focus_follows_terminal_repo(scene, repo, tmp_path):
+    """Focusing another terminal re-points the dock; viewers keep last."""
+    import os
+    import sys
+    import time
+
+    from kilim.terminal_pane import TerminalPane
+
+    def norm(p):
+        return os.path.normcase(p)
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        assert norm(w.git_pane.repo) == norm(repo)
+        root2 = tmp_path / "repo2"
+        root2.mkdir()
+        _git(root2, "init")
+        w.bridge.call(lambda: w.bridge.core.spawn_term(
+            "t2", "t2", sys.executable, ["-c", "import time; time.sleep(60)"],
+            24, 80, 5000, cwd=str(root2)))
+        pane2 = TerminalPane(w.bridge, "t2", w.terminal_theme)
+        w.term_panes["t2"] = pane2
+        try:
+            deadline = time.time() + 10
+            while norm(w.git_pane.repo or "") != norm(str(root2)):
+                w._on_focus_changed(None, pane2.view)
+                app.processEvents()
+                if time.time() > deadline:
+                    break
+            assert norm(w.git_pane.repo) == norm(str(root2))
+            # Viewer (and git) focus keeps the last terminal's repo.
+            w._on_focus_changed(None, w.git_pane.graph)
+            assert norm(w.git_pane.repo) == norm(str(root2))
+            # Same-repo refocus is a no-op too.
+            w._on_focus_changed(None, pane2.view)
+            assert norm(w.git_pane.repo) == norm(str(root2))
+        finally:
+            w.term_panes.pop("t2", None)
+            try:
+                w.bridge.call(lambda: w.bridge.core.terminate_term("t2", 1.0))
+            except Exception:  # noqa: BLE001, S110 — closing anyway
+                pass
+            pane2.setParent(None)
+            pane2.deleteLater()
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_git_follows_code_theme(scene, repo):
+    """Theme switch re-papers the graph, lists, and message views."""
+    from kilim import list_themes, theme_background
+    from PySide6.QtGui import QColor, QPalette
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        current = w.bridge.core.theme()
+        other = next(
+            n for n in list_themes()
+            if theme_background(n) and theme_background(n) != theme_background(current)
+        )
+        w.apply_code_theme(other)
+        paper = QColor(theme_background(other))
+        assert w.git_pane.graph.palette().color(QPalette.Window) == paper
+        assert w.git_pane.diff_view.palette().color(QPalette.Base) == paper
+        assert w.git_pane.msg_view.palette().color(QPalette.Base) == paper
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_graph_paints_antialiased(monkeypatch):
+    """The graph paint path enables AA for curves, dots, and text."""
+    import kilim.git_pane as gp
+    from PySide6.QtGui import QPainter
+    from PySide6.QtWidgets import QApplication
+
+    _app = QApplication.instance() or QApplication([])
+    seen = []
+    real = gp.QPainter
+
+    class Spy(real):
+        def setRenderHint(self, hint, on=True):
+            seen.append(hint)
+            return super().setRenderHint(hint, on)
+
+    monkeypatch.setattr(gp, "QPainter", Spy)
+    view = gp.GraphView(lambda i: None)
+    view.set_commits([
+        {"sha": "m" * 40, "parents": ["a" * 40, "b" * 40],
+         "author": "t", "date": "2026-01-01T00:00:00+00:00",
+         "refs": "HEAD -> main", "subject": "merge"},
+        {"sha": "a" * 40, "parents": [],
+         "author": "t", "date": "2026-01-01T00:00:00+00:00",
+         "refs": "", "subject": "first"},
+        {"sha": "b" * 40, "parents": [],
+         "author": "t", "date": "2026-01-01T00:00:00+00:00",
+         "refs": "", "subject": "second"},
+    ])
+    view.resize(400, 200)
+    view.grab()
+    assert QPainter.Antialiasing in seen
+    assert QPainter.TextAntialiasing in seen
+
+
+def test_highlight_code_bridge_spans_tokens(scene):
+    """highlight_code: syntect spans through the session theme."""
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        rows = w.bridge.core.highlight_code("py", 'def hello(name):\n    pass\n')
+        assert len(rows) == 2
+        first_fgs = {fg for _t, fg, _bg in rows[0]}
+        assert len(rows[0]) >= 3 and len(first_fgs) >= 2
+        plain = w.bridge.core.highlight_code("nope", "just text\n")
+        assert "".join(t for t, _fg, _bg in plain[0]).rstrip("\n") == "just text"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_diff_highlights_code_spans(scene, repo):
+    """The +def line paints marker + syntect spans (not one flat line)."""
+    from PySide6.QtCore import Qt
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        pane = w.git_pane
+        idx = next(k for k, c in enumerate(pane._commits)
+                   if c["subject"] == "third commit")
+        pane._pick_commit(idx)
+        app.processEvents()
+        hits = pane.files_list.findItems("f.py", Qt.MatchEndsWith)
+        assert hits, "third commit must list f.py"
+        pane.files_list.setCurrentRow(pane.files_list.row(hits[0]))
+        app.processEvents()
+        doc = pane.diff_view.document()
+        block = doc.begin()
+        target = None
+        while block.isValid():
+            if block.text().startswith("+def hello"):
+                target = block
+                break
+            block = block.next()
+        assert target is not None
+        it, count = target.begin(), 0
+        while not it.atEnd():
+            count += 1
+            it += 1
+        assert count >= 3, "marker + at least two code spans"
     finally:
         w.close()
         app.processEvents()

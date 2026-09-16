@@ -47,6 +47,7 @@ from kilim.qt_themes import cell_qcolor
 
 HISTORY_LIMIT = 400  # rows per read; more is a scrollback, not a view
 COMMIT_CAP = 300  # diff lines: capped, never a full huge patch
+HIGHLIGHT_CAP = 2000  # file lines per side: bigger keeps line colors
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # diff root vs this
 
 LANE_COLORS = [  # vivid per-lane inks (readable on dark and light paper)
@@ -229,6 +230,18 @@ _STATUS_COLORS = {  # name-status letter -> file-list ink
     "M": "yellow", "A": "brightgreen", "D": "red", "R": "cyan",
     "C": "brightmagenta", "T": "gray", "U": "brightred",
 }
+
+
+def read_file_text(repo: str, sha: str, path: str) -> str:
+    """`git show sha:path` (empty when that side lacks the file)."""
+    try:
+        out = _run_git(repo, "show", f"{sha}:{path}")
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return out.stdout if out.returncode == 0 else ""
+
+
+_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def layout_lanes(commits: list[dict]) -> list[dict]:
@@ -444,6 +457,8 @@ class GraphView(QWidget):
     # ── paint ──
     def paintEvent(self, e):
         p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)  # curves, dots, rings, pills
+        p.setRenderHint(QPainter.TextAntialiasing)
         fm = p.fontMetrics()
         text_pen = self.palette().color(self.foregroundRole())
         hl = self.palette().color(QPalette.Highlight)
@@ -556,6 +571,7 @@ class GitPane(QWidget):
         self._commits: list[dict] = []
         self._selected_sha: str | None = None
         self._files: list[tuple[str, str, str | None]] = []
+        self._file_row: int | None = None
         self._ref = "--all"
         self._refresh_queued = False
 
@@ -821,13 +837,22 @@ class GitPane(QWidget):
         if files:
             self.files_list.setCurrentRow(0)  # fires _on_file_picked -> diff
         else:
+            self._file_row = None
             empty = QListWidgetItem("(no files changed)")
             empty.setFlags(empty.flags() & ~Qt.ItemIsSelectable)
             self.files_list.addItem(empty)
             self.diff_view.clear()
 
+    def refresh_theme(self):
+        """Theme switch: re-apply paper + re-highlight the open diff."""
+        self._apply_theme_paper()
+        if self._selected_sha is not None and self._file_row is not None:
+            self._show_file(self._file_row)
+        self.graph.update()
+
     def _on_file_picked(self, row: int):
-        if 0 <= row < len(self._files):
+        self._file_row = row if 0 <= row < len(self._files) else None
+        if self._file_row is not None:
             self._show_file(row)
 
     def _show_file(self, row: int):
@@ -840,7 +865,23 @@ class GitPane(QWidget):
             if c["sha"] == self._selected_sha and c["parents"]:
                 parent = c["parents"][0]
                 break
-        self._paint_diff(read_file_diff(self.repo, self._selected_sha, parent, path))
+        text = read_file_diff(self.repo, self._selected_sha, parent, path)
+        self._paint_diff(text, path, self._highlighted_sides(path, parent))
+
+    def _highlighted_sides(self, path: str, parent: str | None):
+        """(old_rows, new_rows): syntect spans per side, ([], []) when big."""
+        base = path.rsplit("/", 1)[-1]
+        ext = base.rsplit(".", 1)[-1] if "." in base else ""
+        old_text = read_file_text(self.repo, parent or EMPTY_TREE, path)
+        new_text = read_file_text(self.repo, self._selected_sha, path)
+        if max(len(old_text.splitlines()), len(new_text.splitlines())) > HIGHLIGHT_CAP:
+            return [], []
+        try:
+            old_rows = self.bridge.core.highlight_code(ext, old_text)
+            new_rows = self.bridge.core.highlight_code(ext, new_text)
+        except Exception:  # noqa: BLE001 — highlight never breaks the diff
+            return [], []
+        return old_rows, new_rows
 
     @staticmethod
     def _span(cur, text: str, color: str, fg0, bold: bool = False):
@@ -850,31 +891,78 @@ class GitPane(QWidget):
             fmt.setFontWeight(QFont.Bold)
         cur.insertText(text, fmt)
 
-    def _paint_diff(self, text: str):
-        """Unified diff with line-class colors (headers/hunks/adds/dels)."""
+    def _paint_diff(self, text: str, path: str, sides):
+        """Unified diff: headers/hunks line-colored, code syntect-spanned.
+
+        `sides` = (old_rows, new_rows) of (text, fg, bg) spans indexed by
+        0-based file line; hunk headers track both counters. Added lines
+        get a green wash, deleted a red wash, context stays on paper.
+        Missing rows (cap, binary, huge) fall back to whole-line colors.
+        """
+        old_rows, new_rows = sides
         view = self.diff_view
         fg0 = view.palette().color(view.foregroundRole())
         cur = QTextCursor(view.document())
         cur.beginEditBlock()
         try:
             view.clear()
+            old_no = new_no = 0
             for n, line in enumerate(text.splitlines()):
                 if n > 0:
                     cur.insertBlock()
+                chunks = self._diff_chunks(line, old_rows, new_rows, old_no, new_no)
                 if line.startswith("@@"):
-                    color, bold = "cyan", True
+                    m = _HUNK.match(line)
+                    if m:
+                        old_no, new_no = int(m.group(1)), int(m.group(2))
                 elif line.startswith("+") and not line.startswith("+++"):
-                    color, bold = "brightgreen", False
+                    new_no += 1
                 elif line.startswith("-") and not line.startswith("---"):
-                    color, bold = "brightred", False
-                elif line.startswith("\\"):
-                    color, bold = "gray", False
-                elif line.startswith(("diff --git", "index ", "--- ", "+++ ",
-                                        "new file", "deleted", "similarity",
-                                        "rename ", "old mode", "new mode")):
-                    color, bold = "default", True
-                else:
-                    color, bold = "default", False
-                self._span(cur, line or " ", color, fg0, bold)
+                    old_no += 1
+                elif line.startswith(" "):
+                    old_no += 1
+                    new_no += 1
+                for chunk, color, bold, bg in chunks:
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(cell_qcolor(color, fg0))
+                    if bold:
+                        fmt.setFontWeight(QFont.Bold)
+                    if bg is not None:
+                        fmt.setBackground(bg)
+                    cur.insertText(chunk, fmt)
         finally:
             cur.endEditBlock()
+
+    @staticmethod
+    def _diff_chunks(line, old_rows, new_rows, old_no, new_no):
+        """One diff line -> (text, color, bold, bg) chunks."""
+        if line.startswith("@@"):
+            return [(line or " ", "cyan", True, None)]
+        if line.startswith(("diff --git", "index ", "--- ", "+++ ",
+                            "new file", "deleted", "similarity",
+                            "rename ", "old mode", "new mode")):
+            return [(line or " ", "default", True, None)]
+        if line.startswith("\\"):
+            return [(line or " ", "gray", False, None)]
+        if line.startswith("+") and not line.startswith("+++"):
+            rows, no = new_rows, new_no
+            color, wash = "brightgreen", QColor(80, 255, 80, 26)
+        elif line.startswith("-") and not line.startswith("---"):
+            rows, no = old_rows, old_no
+            color, wash = "brightred", QColor(255, 80, 80, 30)
+        elif line.startswith(" "):
+            rows, no = new_rows, new_no
+            color, wash = "default", None
+        else:
+            return [(line or " ", "default", False, None)]
+        marker, code = line[:1], line[1:]
+        chunks = [(marker, color, True, wash)]
+        spans = rows[no - 1] if 1 <= no <= len(rows) else []
+        if spans:
+            for text, fg, _bg in spans:
+                text = text.rstrip("\r\n")  # syntect keeps line endings
+                if text:
+                    chunks.append((text, fg, False, wash))
+        else:
+            chunks.append((code, color, False, wash))
+        return chunks

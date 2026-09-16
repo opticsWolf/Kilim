@@ -9,7 +9,8 @@ it shows up in both. The Qt surface turns file paths in terminal output into
 links: a click opens the file in a viewer dock. Views > Git History docks a commit browser (git CLI, no new deps) for
 the active terminal's repo: a painted branch graph with ref pills, click
 a commit for its message and file stat, filter by branch, and it
-refreshes itself after commits and fetches.
+refreshes itself after commits and fetches. The dock follows the focused
+terminal's repo, and file diffs preview with full syntax highlighting.
 
 ## Surfaces
 

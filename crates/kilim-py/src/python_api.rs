@@ -152,6 +152,17 @@ impl CoreSession {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
     }
 
+    /// Highlight code text with the session code theme (Qt diff preview).
+    /// `lang` is a token or extension ("python"/"py"); unknown falls
+    /// back to plain text, never errors. Rows align 1:1 with text lines.
+    fn highlight_code(&self, lang: &str, code: &str) -> Vec<Vec<(String, String, String)>> {
+        let s = self.inner.read().unwrap();
+        kilim_core::highlight::ThemeRegistry::highlight(lang, code, s.theme())
+            .into_iter()
+            .map(|row| row.into_iter().map(|sp| (sp.text, sp.fg, sp.bg)).collect())
+            .collect()
+    }
+
     // ── Live terms (shared core, same as TUI) ──
 
     /// Spawn every Term pane without a live handle. Async, GIL released.
