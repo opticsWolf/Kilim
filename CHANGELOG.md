@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.22: large rescales reflow at once — a discrete grid jump (maximize, snap, big yank: 8+ rows or 16+ cols in one poll) now applies immediately instead of waiting out the drag-settle debounce, so the final state starts repainting on the same poll. Small per-poll motion still coalesces to zero mid-gesture resizes.
 - v0.4.21: per-shell Start Directory survives restart — the sidecar choice is now stamped onto layout term panes (new set_pane_cwd bridge call) before ensure_terms spawns them, so the layout terminals reopen in their configured dir — and restart_term keeps it too. A custom dir that no longer exists falls back to App default (inherit) instead of a broken start: checked in Python at resolve time, re-checked by the core at spawn.
 - v0.4.20: resize repaint economy — the wipe+rebuild after a width change now runs inside one edit block (one layout pass, one viewport update, no blank frame even with a full screen of output), and a drag settles one poll earlier (~120ms instead of ~180ms) while mid-gesture motion still costs zero resizes. Measured: worst poll ~11ms during a live drag with 400 lines/sec streaming.
 - v0.4.19: theme switch repaints idle terminals — the forced rebuild flag (v0.4.17) only guarded the shift path, so an idle pane hit the same-window subset no-op and kept stale colors until new output, a scroll, or a resize. All three paint branches honor it now.

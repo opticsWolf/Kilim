@@ -727,6 +727,74 @@ def test_resize_retry_on_failure():
         app.processEvents()
 
 
+def test_resize_jump_applies_immediately():
+    """A discrete grid jump (maximize/snap) applies on the first poll.
+
+    Same synchronous harness as the settle test: the grid shapes are
+    the only moving part. A 30x60 jump lands at once; a 7x15 creep
+    still debounces (applies on the repeat poll)."""
+    import concurrent.futures
+    from unittest.mock import patch
+
+    from kilim.qt_app import TerminalPane
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._poller.stop()
+        term._pending = None
+
+        def drive(shapes):
+            term._applied_grid = None
+            term._pending_grid = None
+            term._pending_same = 0
+            term._resize_pending = None
+            calls = {"n": 0}
+            seen = []
+
+            def fake_grid():
+                i = min(calls["n"], len(shapes) - 1)
+                calls["n"] += 1
+                return shapes[i]
+
+            real_snapshot = TerminalPane._snapshot
+
+            def _rec_snapshot(self, rows, cols):
+                seen.append(rows)
+                return real_snapshot(self, rows, cols)
+
+            def fake_submit(make_coro):
+                fut: concurrent.futures.Future = concurrent.futures.Future()
+                try:
+                    make_coro().close()
+                except Exception:  # noqa: BLE001 - not a coroutine factory
+                    pass
+                fut.set_result(None)
+                return fut
+
+            with (
+                patch.object(TerminalPane, "_grid", side_effect=fake_grid),
+                patch.object(TerminalPane, "_snapshot", _rec_snapshot),
+                patch.object(term.bridge, "submit", side_effect=fake_submit),
+            ):
+                for _ in range(len(shapes)):
+                    term._poll()
+            return seen
+
+        # Discrete jump: new shape snapshots on the very next poll.
+        seen = drive([(40, 100), (70, 160)])
+        assert seen == [40, 70], seen
+        assert term._applied_grid == (70, 160)
+        assert term._resize_pending == (70, 160)
+        # Near-threshold creep: holds, then applies on the repeat.
+        seen = drive([(40, 100), (47, 115), (47, 115)])
+        assert seen == [40, 40, 47], seen
+        assert term._applied_grid == (47, 115)
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_resize_applies_only_after_settle():
     """Resize drag: polls hold the settled grid, one resize lands.
 

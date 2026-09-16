@@ -206,17 +206,26 @@ class TerminalPane(QWidget):
         # Drag coalescing: while the grid keeps moving, hold the settled
         # one — output keeps streaming into it (the buffer), so a gesture
         # costs zero resizes and zero rebuilds; one resize_term + one
-        # swap rebuild land on the first repeat poll (~120ms after the
-        # last motion). Qt clips the stable content natively meanwhile,
-        # which is what makes drags feel instant. Anchoring needs no
-        # help: resize never rewraps scrollback (viewport truncates/
-        # pads, history untouched), so a frozen absolute anchor and
-        # tail-follow both survive unchanged.
+        # rebuild land on the first repeat poll (~120ms after the last
+        # motion). A discrete jump (maximize, snap, big yank — far more
+        # than one poll of smooth dragging can move) applies immediately
+        # instead: it is not a drag, so there is no thrash to avoid, and
+        # the reflow starts this poll. Qt clips the stable content
+        # natively meanwhile, which is what makes drags feel instant.
+        # Anchoring needs no help: resize never rewraps scrollback
+        # (viewport truncates/pads, history untouched), so a frozen
+        # absolute anchor and tail-follow both survive unchanged.
         rows, cols = self._grid()
         if self._applied_grid is None:
             self._applied_grid = (rows, cols)  # first paint: no debounce
         elif (rows, cols) != self._applied_grid:
-            if (rows, cols) == self._pending_grid:
+            dr = abs(rows - self._applied_grid[0])
+            dc = abs(cols - self._applied_grid[1])
+            if dr >= 8 or dc >= 16:
+                self._applied_grid = (rows, cols)
+                self._pending_grid = None
+                self._pending_same = 0
+            elif (rows, cols) == self._pending_grid:
                 self._pending_same += 1
                 if self._pending_same >= 1:
                     self._applied_grid = (rows, cols)
