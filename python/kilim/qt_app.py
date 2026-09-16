@@ -1451,15 +1451,9 @@ class KilimWindow(FramelessLaceMainWindow):
         from lace import TitleBarMode
 
         self.manager.title_bar_mode = TitleBarMode.custom
-        # Esc must reach the focused terminal, but Lace's sidebar handler
-        # binds a *window-wide* Esc ("close sidebar") that swallows it before
-        # any pane sees it — and with a second same-key shortcut Qt reports
-        # both as ambiguous and neither fires. Kilim disables the sidebar
-        # binding; sidebars keep their close button and the Views menu.
-        try:
-            self.manager.sidebar_manager._keyboard._shortcuts["Escape"].setEnabled(False)
-        except (AttributeError, KeyError, RuntimeError):
-            pass  # Lace without that binding (or a future public API)
+        # Esc belongs to the focused terminal. Lace >= 0.7.6 gates its
+        # window-wide "close sidebar" Esc binding on overlay visibility, so
+        # no workaround is needed here; with an overlay up, Esc closes it.
         # Explicit, after the manager: keeps the title bar on top.
         self.setCentralWidget(self.manager._root)
         # Both sidebars exist from the start: title-bar pin buttons appear

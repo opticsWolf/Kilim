@@ -940,15 +940,17 @@ def test_escape_and_tab_reach_the_terminal_through_qt():
 
         # Tab/Backtab are the terminal's: Qt hands them to keyPressEvent.
         assert term.view.focusNextPrevChild(True) is False
-        # Lace's sidebar Esc binding is turned off (it used to eat the key,
-        # and a second same-key shortcut made both ambiguous).
-        sidebar_esc = w.manager.sidebar_manager._keyboard._shortcuts["Escape"]
+
+        # Lace >= 0.7.6 gates its window-wide Esc ("close sidebar") on overlay
+        # visibility (event filter on Show/Hide): with nothing open it is off
+        # and the terminal keeps the key; while an overlay is up it is on, so
+        # Esc closes that instead of reaching the shell.
+        sidebar = w.manager.sidebar_manager
+        sidebar_esc = sidebar._keyboard._shortcuts["Escape"]
         assert sidebar_esc.isEnabled() is False
 
         stolen = []
-        w.manager.sidebar_manager._keyboard.close_current.connect(
-            lambda: stolen.append(1)
-        )
+        sidebar._keyboard.close_current.connect(lambda: stolen.append(1))
         sent = []
         real_submit = term.bridge.submit
         term.bridge.submit = lambda make_coro: sent.append(_submitted_bytes(make_coro))
@@ -966,9 +968,37 @@ def test_escape_and_tab_reach_the_terminal_through_qt():
                 )
                 app.processEvents()
                 assert sent == [expected], (key, sent)
+            assert stolen == [], "Lace's sidebar Esc handler took the key"
+
+            # Overlay up: Esc belongs to the sidebar, the shell sees nothing.
+            overlay = sidebar.overlay
+            overlay.show()
+            app.processEvents()
+            assert sidebar_esc.isEnabled() is True
+            sent.clear()
+            stolen.clear()
+            QApplication.sendEvent(
+                term.view,
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key_Escape, Qt.NoModifier, ""),
+            )
+            app.processEvents()
+            assert stolen == [1], "the overlay should close on Esc"
+            assert sent == [], "the shell must not see the overlay-close Esc"
+
+            # Overlay gone: the terminal gets Esc back on its own.
+            overlay.hide()
+            app.processEvents()
+            assert sidebar_esc.isEnabled() is False
+            sent.clear()
+            QApplication.sendEvent(
+                term.view,
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key_Escape, Qt.NoModifier, ""),
+            )
+            app.processEvents()
+            assert sent == [b"\x1b"], sent
         finally:
             term.bridge.submit = real_submit
-        assert stolen == [], "Lace's sidebar Esc handler took the key"
+            sidebar.overlay.hide()
     finally:
         w.close()
         app.processEvents()
