@@ -129,7 +129,7 @@ cargo run -p kilim-tui -- layouts/example.json   # three-pane demo layout
 crates/kilim-core  layout + syntect highlight + Session + term handles (no UI deps)
 crates/kilim-tui   `kilim` binary: ratatui + crossterm + stitch-pty
 crates/kilim-py    `kilim._core`: PyO3 abi3 bridge for the Qt surface
-python/kilim/      Qt frontends (qt_app, perspective, themes, shells) — surface only
+python/kilim/      Qt frontends (qt_app facade, main_window, terminal_pane, viewer_panes, title_bar, qt_themes, qt_bridge, qt_termkeys, qt_util, perspective, shells) — surface only
 layouts/           default + gitbash examples
 scripts/           profile_qt.py, memwatch.py
 ```

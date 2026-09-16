@@ -6,3 +6,6 @@ __pycache__/
 *.pdb
 *.pyd
 *.so
+
+# CodeRadar
+.coderadar/

@@ -121,6 +121,14 @@ def test_status_bar_is_laid_out_and_has_no_resize_grip(scene):
         bar = w.statusBar()
         assert bar.isSizeGripEnabled() is False
         assert bar.findChild(QSizeGrip) is None
+        # 5px breathing room on both sides: message text starts 5px in, the
+        # permanent theme label ends 5px from the right edge.
+        w._set_status_message("x")
+        _settle(app, 4)
+        msg = w._status_message
+        assert msg.geometry().x() + msg.contentsMargins().left() == 5
+        assert bar.width() - (w._status_theme.geometry().right() + 1) == 5
+        w._set_status_message("")
         for width, height in ((1100, 700), (640, 480), (900, 620)):
             w.resize(width, height)
             _settle(app, 4)
@@ -147,7 +155,7 @@ def test_status_bar_hover_follows_the_link_under_the_mouse(scene, tmp_path):
         src.write_text("x = 1\n", encoding="utf-8")
         term._render(_fake_snap([["see", " " + str(src) + ":", "1"]]))
         bar = w.statusBar()
-        assert bar.currentMessage() == ""
+        assert w._status_message.text() == ""
 
         doc = term.view.document()
         block = doc.findBlockByNumber(0)
@@ -155,11 +163,11 @@ def test_status_bar_hover_follows_the_link_under_the_mouse(scene, tmp_path):
         cur.setPosition(block.position() + len("see "))
         rect = term.view.cursorRect(cur)
         _move(term.view, QPoint(rect.left() + 2, rect.center().y()))
-        assert bar.currentMessage() == f"Open {src}"
+        assert w._status_message.text() == f"Open {src}"
 
         # Off the link — back over the plain text before it — it clears again.
         _move(term.view, QPoint(2, rect.center().y()))
-        assert bar.currentMessage() == ""
+        assert w._status_message.text() == ""
     finally:
         w.close()
         app.processEvents()

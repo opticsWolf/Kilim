@@ -821,7 +821,7 @@ def test_lace_switch_defers_markdown_refresh():
             calls.append(args)
             return real(*args)
 
-        with patch("kilim.qt_app.QTimer.singleShot", side_effect=rec):
+        with patch("kilim.main_window.QTimer.singleShot", side_effect=rec):
             w.apply_lace_theme("kilim_warm")
         app.processEvents()
         assert w.md_panes, "the example layout must have a markdown pane"
