@@ -1,0 +1,160 @@
+"""Qt status bar: focused-pane + theme labels, link hover, geometry.
+
+QMainWindow owns the bar's geometry — that is the point of adding it this
+way: resizing the window needs no resize handler in Kilim, which is what
+the geometry test below pins down."""
+
+import pytest
+
+pytest.importorskip("PySide6.QtWidgets")
+pytest.importorskip("lace")
+
+MIDDLE_DOT = "\u00b7"
+
+
+@pytest.fixture()
+def scene(tmp_path):
+    """Hermetic (layout, sidecar) pair: tests never write the repo files."""
+    from _util import copy_layout
+
+    layout = copy_layout("layouts/default.json", tmp_path / "l.json")
+    return str(layout), str(tmp_path / "l.perspective.json")
+
+
+def _window(layout, sidecar):
+    from PySide6.QtWidgets import QApplication
+
+    from kilim.qt_app import KilimWindow
+
+    app = QApplication.instance() or QApplication([])
+    w = KilimWindow(layout, sidecar)
+    w.resize(900, 620)
+    w.show()
+    return app, w
+
+
+def _settle(app, n=12):
+    for _ in range(n):
+        app.processEvents()
+
+
+def _fake_snap(rows, cursor=(0, 0)):
+    cells = [[(t, "default", "default", 0) for t in row] for row in rows]
+    return {
+        "cells": cells,
+        "cursor": cursor,
+        "start": 0,
+        "total": len(rows),
+        "rows": len(rows),
+        "modes": {"app_cursor": False, "bracketed": False, "mouse": 0,
+                  "sgr": False, "alt": False, "bell": False},
+        "dirty": [],
+    }
+
+
+def _move(view, pos):
+    """Synthesize a hover (mouse move, no buttons) at `pos`."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ev = QMouseEvent(
+        QEvent.MouseMove,
+        QPointF(pos),
+        QPointF(view.viewport().mapToGlobal(pos)),
+        Qt.NoButton,
+        Qt.NoButton,
+        Qt.NoModifier,
+    )
+    view.mouseMoveEvent(ev)
+
+
+def _window_palette(bar):
+    role = bar.palette().ColorRole
+    return bar.palette().color(role.Window).name()
+
+
+def test_status_bar_names_the_focused_pane_and_theme(scene, tmp_path):
+    app, w = _window(*scene)
+    try:
+        _settle(app)
+        bar = w.statusBar()
+        assert bar.isVisible()
+        assert bar.height() > 0
+
+        # Theme label mirrors the code theme and follows a switch, palette
+        # included (Lace's app-wide DockThemeBridge themes standard widgets).
+        assert w._status_theme.text() == f"[{w.bridge.core.theme()}]"
+        chrome_before = _window_palette(bar)
+        w.apply_lace_theme("kilim_light")
+        _settle(app)
+        assert w._status_theme.text() == "[Kilim Light]"
+        assert _window_palette(bar) != chrome_before
+
+        # Terminal pane label, then a viewer dock takes focus.
+        term = next(iter(w.term_panes.values()))
+        term._poller.stop()
+        term.view.setFocus()
+        _settle(app)
+        assert w._status_pane.text().startswith(f"Terminal {MIDDLE_DOT}")
+        assert "exited" not in w._status_pane.text()
+
+        src = tmp_path / "sample.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        w.open_in_viewer(str(src), 1, "code")
+        _settle(app)
+        assert w._status_pane.text().startswith(f"File {MIDDLE_DOT}")
+        assert w._status_pane.toolTip() == str(src)
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_status_bar_needs_no_resize_handler(scene):
+    """The bar is full-width and bottom-flush after every resize: QMainWindow
+    Lays it out, so Kilim carries no resizeEvent / eventFilter for it."""
+    app, w = _window(*scene)
+    try:
+        _settle(app)
+        bar = w.statusBar()
+        for width, height in ((1100, 700), (640, 480), (900, 620)):
+            w.resize(width, height)
+            _settle(app, 4)
+            g = bar.geometry()
+            assert g.width() == w.width(), (width, height, g)
+            assert g.y() + g.height() == w.height(), (width, height, g)
+            assert bar.isVisible()
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_status_bar_hover_follows_the_link_under_the_mouse(scene, tmp_path):
+    """A real mouse move over a path shows the target; moving off clears it."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QTextCursor
+
+    app, w = _window(*scene)
+    try:
+        _settle(app)
+        term = next(iter(w.term_panes.values()))
+        term._poller.stop()
+        src = tmp_path / "hovered.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        term._render(_fake_snap([["see", " " + str(src) + ":", "1"]]))
+        bar = w.statusBar()
+        assert bar.currentMessage() == ""
+
+        doc = term.view.document()
+        block = doc.findBlockByNumber(0)
+        cur = QTextCursor(doc)
+        cur.setPosition(block.position() + len("see "))
+        rect = term.view.cursorRect(cur)
+        _move(term.view, QPoint(rect.left() + 2, rect.center().y()))
+        assert bar.currentMessage() == f"Open {src}"
+
+        # Off the link — back over the plain text before it — it clears again.
+        _move(term.view, QPoint(2, rect.center().y()))
+        assert bar.currentMessage() == ""
+    finally:
+        w.close()
+        app.processEvents()

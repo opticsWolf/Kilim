@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QPlainTextEdit, QScrollBar, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPlainTextEdit, QScrollBar, QTextBrowser, QVBoxLayout, QWidget
 
 from lace.dock_styled import DockStyled
 from lace.dock_theme import DockStyleCategory
@@ -295,6 +295,14 @@ def _modes_dict(m) -> dict:
     }
 
 
+def _elide_path(path: str, limit: int = 64) -> str:
+    """Middle-elide a long path for the status bar (tooltip keeps it whole)."""
+    if len(path) <= limit:
+        return path
+    keep = limit // 2 - 2
+    return f"{path[:keep]}\u2026{path[-keep:]}"
+
+
 def _arrow_seq(key, app_cursor: bool) -> bytes | None:
     """Cursor-key bytes: SS3 (\\x1bO) in application mode, CSI otherwise."""
     from PySide6.QtCore import Qt
@@ -363,7 +371,12 @@ class _TermView(QPlainTextEdit):
         if QApplication.mouseButtons() == Qt.NoButton:
             hit = self._owner._link_at(e.position().toPoint())
             self.viewport().setCursor(Qt.PointingHandCursor if hit else Qt.IBeamCursor)
+            self._owner._hover_status(hit)
         super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._owner._hover_status(None)  # no stale link in the status bar
+        super().leaveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._owner._mouse_active():
@@ -645,6 +658,25 @@ class TerminalPane(QWidget):
             if self.view.cursorRect(a).left() <= pos.x() <= self.view.cursorRect(b).left():
                 return hit
         return None
+
+    def _hover_status(self, hit):
+        """Browser-style link feedback in the window status bar.
+
+        mouseMove is a hot path, so the bar is only touched when the
+        hovered target actually changes.
+        """
+        text = f"Open {hit[2]}" if hit else ""
+        if text == getattr(self, "_hover_text", None):
+            return
+        self._hover_text = text
+        try:
+            bar = self.window().statusBar()
+        except (AttributeError, RuntimeError):
+            return  # windowless pane (tests, teardown)
+        if text:
+            bar.showMessage(text)
+        else:
+            bar.clearMessage()
 
     def open_link(self, hit):
         """A clicked path: hand it to the window's viewer router."""
@@ -1549,6 +1581,7 @@ class KilimWindow(FramelessLaceMainWindow):
         if self.lace_theme is None and "kilim_midnight" in self._kilim_by_lace:
             self.apply_lace_theme("kilim_midnight")  # fresh launch opens unified
         self._build_menus()
+        self._build_status_bar()
         # Focused dock == active pane (session_active reads it that
         # way), and only a focused text widget draws its cursor. Lace
         # chrome (tab bar) grabs focus on show and beats the one-shot,
@@ -1568,6 +1601,57 @@ class KilimWindow(FramelessLaceMainWindow):
         # watches QEvent.WinIdChange and re-applies the frameless chrome
         # (ensure_frameless_chrome) for exactly this, so no manual
         # updateFrameless() is needed here anymore.
+
+    def _build_status_bar(self):
+        """Bottom bar: transient messages left, active pane + theme right.
+
+        QMainWindow lays the status bar out itself — no resize handler and
+        no manual geometry anywhere — and Lace's app-wide DockThemeBridge
+        pushes the themed palette onto it, so it follows theme switches the
+        same way dock chrome does.
+        """
+        bar = self.statusBar()
+        self._status_pane = QLabel("")
+        self._status_theme = QLabel("")
+        bar.addPermanentWidget(self._status_pane)
+        bar.addPermanentWidget(self._status_theme)
+        self._refresh_status()
+
+    def _refresh_status(self):
+        """Both permanent widgets: active pane + code theme (as the TUI bar)."""
+        if not hasattr(self, "_status_pane"):
+            return  # theme setup runs before _build_status_bar
+        self._refresh_status_pane()
+        try:
+            self._status_theme.setText(f"[{self.bridge.core.theme()}]")
+            self._status_theme.setToolTip("Code / preview theme (Themes menu)")
+        except (AttributeError, RuntimeError):
+            pass  # half-torn-down window
+
+    def _refresh_status_pane(self):
+        text, tip = self._status_pane_info()
+        self._status_pane.setText(text)
+        self._status_pane.setToolTip(tip)
+
+    def _status_pane_info(self) -> tuple[str, str]:
+        """(label, tooltip) for the pane that currently has focus."""
+        if not hasattr(self, "_status_pane"):
+            return "", ""
+        try:
+            pid = self.session_active()
+            if pid in self.term_panes:
+                note = " (exited)" if pid in set(self.bridge.core.exited_terms()) else ""
+                return f"Terminal \u00b7 {pid}{note}", f"terminal pane {pid}"
+            pane = self.file_panes.get(pid)
+            if pane is not None and getattr(pane, "path", None):
+                return f"File \u00b7 {_elide_path(pane.path)}", pane.path
+            pane = self.md_panes.get(pid)
+            if pane is not None and getattr(pane, "path", None):
+                what = "Web" if pane.html_file else "Preview"
+                return f"{what} \u00b7 {_elide_path(pane.path)}", pane.path
+        except (AttributeError, RuntimeError):
+            pass
+        return "", ""
 
     def _setup_icon(self):
         """Kilim icon for the window (drawn in the title bar) and the app.
@@ -1642,6 +1726,7 @@ class KilimWindow(FramelessLaceMainWindow):
     def _on_focus_changed(self, _old, new):
         if new is None:
             return
+        self._refresh_status_pane()  # status bar tracks the focused pane
         try:
             if self._inside_panes(new):
                 return
@@ -2033,6 +2118,7 @@ class KilimWindow(FramelessLaceMainWindow):
                 self.save_themes()
                 self.save_lace_theme()
             self._sync_theme_checks()
+            self._refresh_status()  # theme label follows the switch
 
     def _sync_theme_checks(self):
         """Radio-check the Themes menu to live state (unified applies)."""
