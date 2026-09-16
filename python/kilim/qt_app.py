@@ -22,6 +22,7 @@ from kilim.qt_termkeys import (
 )
 from kilim.qt_themes import cell_qcolor, kilim_theme_defs, register_kilim_lace_themes
 from kilim.qt_util import _elide_path, _same_path
+from kilim.git_pane import GitPane
 from kilim.terminal_pane import TerminalPane, _TermView
 from kilim.title_bar import KilimTitleBar
 from kilim.viewer_panes import FilePane, MarkdownPane, _fusion_scrollbar_css
@@ -29,6 +30,7 @@ from kilim.viewer_panes import FilePane, MarkdownPane, _fusion_scrollbar_css
 __all__ = [
     "Bridge",
     "FilePane",
+    "GitPane",
     "KilimTitleBar",
     "KilimWindow",
     "MarkdownPane",

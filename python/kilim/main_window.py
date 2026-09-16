@@ -13,6 +13,7 @@ from lace.frameless_window import FramelessLaceMainWindow
 from kilim import perspective as perspectives
 from kilim.perspective import layout_groups
 from kilim.qt_bridge import Bridge
+from kilim.git_pane import GitPane
 from kilim.qt_themes import register_kilim_lace_themes
 from kilim.qt_util import _elide_path, _same_path
 from kilim.terminal_pane import TerminalPane
@@ -53,6 +54,7 @@ class KilimWindow(FramelessLaceMainWindow):
             _side = _json.loads(Path(self.perspective_path).read_text(encoding="utf-8"))
             _cwds = _side.get("shell_cwds") if isinstance(_side, dict) else None
         except (OSError, ValueError):
+            _side = None
             _cwds = None
         # Machine-local paths: sidecar, never the shared layout. Values
         # are {mode, dir} specs (plain strings = v0.4.12 customs).
@@ -93,6 +95,8 @@ class KilimWindow(FramelessLaceMainWindow):
         self.term_panes: dict[str, QWidget] = {}
         self.file_panes: dict[str, QWidget] = {}
         self.md_panes: dict[str, QWidget] = {}
+        self.git_pane: QWidget | None = None  # history dock: Python-only
+        self._git_action = None  # Views checkable (created in _build_menus)
         self._badge_base: dict[str, str] = {}  # un-dotted tab titles
         self.lace_theme: str | None = None
         self.terminal_theme: str | None = None
@@ -149,6 +153,16 @@ class KilimWindow(FramelessLaceMainWindow):
                     # center + target = tabify (keeps manager registration).
                     self.manager.add_dock_widget(DockWidgetArea.center, dock, area_widget)
                 self.pane_docks[pid] = dock
+        # Git history dock: Python-only (no session pane), restored here —
+        # before the creation-state capture + sidecar apply — so its
+        # geometry round-trips like every other dock.
+        _git_open = bool(_side.get("git_open")) if isinstance(_side, dict) else False
+        _git_repo = _side.get("git_repo") if isinstance(_side, dict) else None
+        if _git_open:
+            self._open_git_dock(
+                repo=_git_repo if isinstance(_git_repo, str) else None,
+                _startup=True,
+            )
         # The arrangement the layout file defines, captured before the
         # sidecar is applied: Reset Layout returns here. The sidecar is a
         # *session* restore; it must not become the default.
@@ -268,6 +282,8 @@ class KilimWindow(FramelessLaceMainWindow):
             if pane is not None and getattr(pane, "path", None):
                 what = "Web" if pane.html_file else "Preview"
                 return f"{what} \u00b7 {_elide_path(pane.path)}", pane.path
+            if pid == "git" and self.git_pane is not None and self.git_pane.repo:
+                return f"Git \u00b7 {_elide_path(self.git_pane.repo)}", self.git_pane.repo
         except (AttributeError, RuntimeError):
             pass
         return "", ""
@@ -295,6 +311,7 @@ class KilimWindow(FramelessLaceMainWindow):
                 list(self.term_panes.values())
                 + list(self.file_panes.values())
                 + list(self.md_panes.values())
+                + ([self.git_pane] if self.git_pane is not None else [])
             )
             while w is not None:
                 if w in containers:
@@ -316,6 +333,8 @@ class KilimWindow(FramelessLaceMainWindow):
             if lay is not None and lay.count():
                 return lay.itemAt(0).widget()
             return self.md_panes[pid]
+        if pid == "git" and self.git_pane is not None:
+            return self.git_pane.history_view
         return None
 
     def _claim_pane_focus(self):
@@ -360,9 +379,16 @@ class KilimWindow(FramelessLaceMainWindow):
         way back (Lace re-docks on toggle_view(True))."""
         views = self.titleBar.views_menu
         for pid, dock in self.pane_docks.items():
+            if pid == "git":
+                continue  # owned by the persistent action below
             action = dock.toggle_view_action()
             action.setText(dock.windowTitle())
             views.addAction(action)
+        git_act = views.addAction("Git History")
+        git_act.setCheckable(True)
+        git_act.setChecked(self.git_pane is not None)
+        git_act.triggered.connect(lambda _c=False: self.toggle_git_history())
+        self._git_action = git_act
         views.addSeparator()
         show_all = views.addAction("Show All Panes")
         show_all.triggered.connect(self.restore_all_panes)
@@ -774,6 +800,99 @@ class KilimWindow(FramelessLaceMainWindow):
             pass
         pane.setParent(None)
         pane.deleteLater()
+
+    def toggle_git_history(self):
+        """Views check: open the history dock, or close it again."""
+        if self.git_pane is None:
+            self._open_git_dock()
+            return
+        dock = self.pane_docks.get("git")
+        if dock is not None:
+            try:
+                dock.toggle_view(False)
+                return
+            except RuntimeError:
+                pass
+        self._dispose_git()
+
+    def _open_git_dock(self, repo: str | None = None, _startup: bool = False):
+        """Create the history dock (right, tabified with the viewers).
+
+        The pane is Python-only — no session pane, so no core calls — and
+        `repo=None` means the active terminal's repo (else the app dir,
+        else an empty state with an Open button)."""
+        from lace import DockWidget
+        from lace import DockWidgetArea
+
+        if self.git_pane is not None:
+            dock = self.pane_docks.get("git")
+            if dock is not None:
+                try:
+                    dock.toggle_view(True)
+                except RuntimeError:
+                    pass
+            return
+        if repo is None:
+            repo = self._default_git_repo()
+        pane = GitPane(self.bridge, repo)
+        pane.on_repo_changed = lambda path: self._save_sidecar(git_repo=path)
+        dock = DockWidget("Git History")
+        dock.setObjectName("git")
+        dock.set_widget(pane)
+        target = self._live_viewer_area()
+        if target is not None:
+            self.manager.add_dock_widget(DockWidgetArea.center, dock, target)
+        else:
+            self.manager.add_dock_widget(DockWidgetArea.right, dock)
+        self.pane_docks["git"] = dock
+        self.git_pane = pane
+        dock.closed.connect(lambda: self._dispose_git())
+        if self._git_action is not None:
+            try:
+                self._git_action.setChecked(True)
+            except RuntimeError:
+                pass
+        self._save_sidecar(git_open=True, git_repo=pane.repo)
+        if not _startup:
+            try:
+                pane.history_view.setFocus()
+            except RuntimeError:
+                pass
+
+    def _default_git_repo(self) -> str | None:
+        """Repo for a fresh history dock: active term's live dir, else app."""
+        from kilim.git_pane import repo_root
+
+        try:
+            pid = self.session_active()
+            if pid in self.term_panes:
+                snap = self.bridge.call(lambda: self.bridge.core.snapshot_term(pid, 1, None))
+                cwd = snap[6] if len(snap) > 6 else None
+                root = repo_root(cwd) if cwd else None
+                if root:
+                    return root
+        except Exception:  # noqa: BLE001 — fall through to the app dir
+            pass
+        import os
+
+        return repo_root(os.getcwd())
+
+    def _dispose_git(self) -> None:
+        """A history dock closed: drop the widget (no session pane here)."""
+        pane, self.git_pane = self.git_pane, None
+        self.pane_docks.pop("git", None)
+        if pane is not None:
+            try:
+                pane.setParent(None)
+                pane.deleteLater()
+            except RuntimeError:
+                pass
+        if self._git_action is not None:
+            try:
+                self._git_action.setChecked(False)
+            except RuntimeError:
+                pass
+        self._save_sidecar(git_open=False)
 
     def _build_themes_menu(self):
         """Themes menu: App chrome, syntax (Qt + TUI), terminal (Qt terms).

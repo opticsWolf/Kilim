@@ -6,7 +6,10 @@ A multi-view terminal workspace: **one headless Rust core, two surfaces** — a
 Terminal panes, syntax-highlighted code panes, and Markdown previews (GFM,
 KaTeX math, mermaid) share one `Session`: spawn a shell in either surface and
 it shows up in both. The Qt surface turns file paths in terminal output into
-links: a click opens the file in a viewer dock.
+links: a click opens the file in a viewer dock. Views > Git History docks a
+branch-graph commit browser (git CLI, no new deps) for the active terminal's
+repo: click a commit for its message and file stat, filter by branch, and it
+refreshes itself after commits and fetches.
 
 ## Surfaces
 
@@ -67,7 +70,7 @@ older three-pane arrangement (terminal + code + markdown) as a demo; both
 surfaces render either file.
 
 Dock geometry and pins persist in a sidecar (`layouts/<name>.perspective.json`);
-the chosen Lace theme, default terminal, shell start directories, and recent viewer files ride in it too.
+the chosen Lace theme, default terminal, shell start directories, recent viewer files, and the Git dock (open + repo) ride in it too.
 
 ## Clickable paths
 
@@ -135,7 +138,7 @@ cargo run -p kilim-tui -- layouts/example.json   # three-pane demo layout
 crates/kilim-core  layout + syntect highlight + Session + term handles (no UI deps)
 crates/kilim-tui   `kilim` binary: ratatui + crossterm + stitch-pty
 crates/kilim-py    `kilim._core`: PyO3 abi3 bridge for the Qt surface
-python/kilim/      Qt frontends (qt_app facade, main_window, terminal_pane, viewer_panes, title_bar, qt_themes, qt_bridge, qt_termkeys, qt_util, perspective, shells) — surface only
+python/kilim/      Qt frontends (qt_app facade, main_window, terminal_pane, viewer_panes, git_pane, title_bar, qt_themes, qt_bridge, qt_termkeys, qt_util, perspective, shells) — surface only
 layouts/           default + gitbash examples
 scripts/           profile_qt.py, memwatch.py
 ```

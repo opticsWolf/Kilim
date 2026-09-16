@@ -1,6 +1,6 @@
 [package]
 name = "kilim-core"
-version = "0.4.24"
+version = "0.4.25"
 edition = "2021"
 description = "Headless core for Kilim: layout model, syntax highlighting, session state (no UI deps)"
 license = "MIT OR Apache-2.0"
