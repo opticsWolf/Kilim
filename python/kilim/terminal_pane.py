@@ -206,18 +206,19 @@ class TerminalPane(QWidget):
         # Drag coalescing: while the grid keeps moving, hold the settled
         # one — output keeps streaming into it (the buffer), so a gesture
         # costs zero resizes and zero rebuilds; one resize_term + one
-        # rebuild land after 2 quiet polls (~120ms). Qt clips the stable
-        # content natively meanwhile, which is what makes drags feel
-        # instant. Anchoring needs no help: resize never rewraps
-        # scrollback (viewport truncates/pads, history untouched), so a
-        # frozen absolute anchor and tail-follow both survive unchanged.
+        # swap rebuild land on the first repeat poll (~120ms after the
+        # last motion). Qt clips the stable content natively meanwhile,
+        # which is what makes drags feel instant. Anchoring needs no
+        # help: resize never rewraps scrollback (viewport truncates/
+        # pads, history untouched), so a frozen absolute anchor and
+        # tail-follow both survive unchanged.
         rows, cols = self._grid()
         if self._applied_grid is None:
             self._applied_grid = (rows, cols)  # first paint: no debounce
         elif (rows, cols) != self._applied_grid:
             if (rows, cols) == self._pending_grid:
                 self._pending_same += 1
-                if self._pending_same >= 2:
+                if self._pending_same >= 1:
                     self._applied_grid = (rows, cols)
                     self._pending_grid = None
                     self._pending_same = 0
@@ -510,12 +511,19 @@ class TerminalPane(QWidget):
         self._open_path(hit[2], hit[3], hit[5])
 
     def _paint_full(self, rows, fg0, bg0, caret=None):
-        """Wipe + rebuild (first paint, resize, theme switch)."""
+        """Wipe + rebuild inside one edit block (first paint, width
+        resize, theme switch).
+
+        One edit block = one layout pass and a single viewport update
+        when we return to the event loop — no blank frame between wipe
+        and rebuild, no per-block relayout churn even with a full
+        screen of output."""
         self._render_count += 1
-        self.view.clear()
         cur = self.view.textCursor()
-        cur.beginEditBlock()  # one layout pass for the whole rebuild
+        cur.beginEditBlock()
         try:
+            cur.select(QTextCursor.Document)
+            cur.removeSelectedText()
             for i, row in enumerate(rows):
                 self._insert_runs(
                     cur,

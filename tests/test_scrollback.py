@@ -785,10 +785,12 @@ def test_resize_applies_only_after_settle():
         rows_seen = seen_rows
         assert rows_seen, "expected snapshots to run"
         # Drag intermediates (41-44) never reshape a snapshot: polls hold
-        # the settled grid, then move to the new one once stable.
+        # the settled grid, then move to the new one once stable. The
+        # settle applies on the first repeat poll; the final stable poll
+        # then holds the same grid, so the new shape appears twice.
         assert set(rows_seen) == {40, 45}, rows_seen
-        assert rows_seen.count(45) == 1, rows_seen  # one new-shape poll
-        assert term._applied_grid == (45, 100)  # then applied once stable
+        assert rows_seen.count(45) == 2, rows_seen
+        assert term._applied_grid == (45, 100)  # applied once stable
         assert term._resize_pending == (45, 100)  # resize follows the settle
     finally:
         w.close()
