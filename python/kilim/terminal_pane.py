@@ -135,6 +135,9 @@ class TerminalPane(QWidget):
         lay.addWidget(self.bar, 0)
         self._pending: concurrent.futures.Future | None = None
         self._resize_pending: tuple[int, int] | None = None
+        self._applied_grid: tuple[int, int] | None = None  # settled grid (debounce)
+        self._pending_grid: tuple[int, int] | None = None
+        self._pending_same = 0
         self._theme_name: str | None = None  # themed palette tracker
         self._start = 0  # first history line currently shown
         self._total = 0
@@ -175,7 +178,31 @@ class TerminalPane(QWidget):
     def _poll(self):
         # Resize first: a slow snapshot must never stall dimension sync
         # (regression: resizes piled up unprocessed while snapshots lagged).
+        # Drag coalescing: while the grid keeps moving, hold the settled
+        # one — output keeps streaming into it (the buffer), so a gesture
+        # costs zero resizes and zero rebuilds; one resize_term + one
+        # rebuild land after 2 quiet polls (~120ms). Qt clips the stable
+        # content natively meanwhile, which is what makes drags feel
+        # instant. Anchoring needs no help: resize never rewraps
+        # scrollback (viewport truncates/pads, history untouched), so a
+        # frozen absolute anchor and tail-follow both survive unchanged.
         rows, cols = self._grid()
+        if self._applied_grid is None:
+            self._applied_grid = (rows, cols)  # first paint: no debounce
+        elif (rows, cols) != self._applied_grid:
+            if (rows, cols) == self._pending_grid:
+                self._pending_same += 1
+                if self._pending_same >= 2:
+                    self._applied_grid = (rows, cols)
+                    self._pending_grid = None
+                    self._pending_same = 0
+            else:
+                self._pending_grid = (rows, cols)
+                self._pending_same = 0
+            rows, cols = self._applied_grid
+        else:
+            self._pending_grid = None
+            self._pending_same = 0
         if self._resize_pending != (rows, cols):
             self._resize_pending = (rows, cols)
             fut = self.bridge.submit(lambda: self.bridge.core.resize_term(self.pane_id, rows, cols))

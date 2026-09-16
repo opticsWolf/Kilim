@@ -727,6 +727,59 @@ def test_resize_retry_on_failure():
         app.processEvents()
 
 
+def test_resize_applies_only_after_settle():
+    """Resize drag: snapshots hold the settled grid, one resize lands."""
+    from unittest.mock import patch
+
+    from kilim.qt_app import TerminalPane
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._poller.stop()
+        for _ in range(20):  # drain any in-flight poll snapshot
+            app.processEvents()
+            time.sleep(0.02)
+            if term._pending is None or term._pending.done():
+                break
+        term._pending = None
+        term._applied_grid = None
+        term._pending_grid = None
+        term._pending_same = 0
+        term._resize_pending = None
+        shapes = [(40, 100)] + [(41 + i, 100) for i in range(4)] + [(45, 100)] * 3
+        # Function, not an iterator: a queued poller timeout from before
+        # stop() may slip one extra _poll in; extras repeat the last shape.
+        calls = {"n": 0}
+
+        def fake_grid():
+            i = min(calls["n"], len(shapes) - 1)
+            calls["n"] += 1
+            return shapes[i]
+
+        with (
+            patch.object(TerminalPane, "_grid", side_effect=fake_grid),
+            patch.object(
+                TerminalPane, "_snapshot", autospec=True,
+                wraps=TerminalPane._snapshot,
+            ) as snap,
+        ):
+            for _ in range(len(shapes)):
+                term._poll()
+                app.processEvents()
+                time.sleep(0.07)
+        rows_seen = [c.args[1] for c in snap.await_args_list]
+        assert rows_seen, "expected snapshots to run"
+        # Drag intermediates (41-44) never reshape a snapshot: polls hold
+        # the settled grid, then move to the new one once stable.
+        assert not (set(rows_seen) - {40, 45}), rows_seen
+        assert term._applied_grid == (45, 100)  # then applied once stable
+        assert term._resize_pending == (45, 100)  # exactly one resize fired
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_term_pane_follows_terminal_theme():
     """Shell view tracks the terminal theme (palette + repaint marker)."""
     from PySide6.QtGui import QColor, QPalette

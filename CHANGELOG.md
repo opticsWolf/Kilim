@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.16: instant-feeling resizes — resize drags coalesce: polls hold the settled grid (output keeps streaming into it) and one resize plus one rebuild land after 2 quiet polls, instead of a full rebuild every 60 ms. Anchoring needed no help — resize never rewraps scrollback, so frozen and tail positions survive unchanged.
 - v0.4.15: more paths linkify — pytest/rust `path::test` node ids link the path part, bare Makefile/README-style names open when such a file exists, and a pinned sweep keeps .txt/.json/.yaml/.toml/.rs/.py plus the usual language extensions opening as code. Path tests now serialize on a mutex (shared kind cache vs parallel threads flaked once in ten runs).
 - v0.4.14: calmer terminal repaints — streaming output now scrolls blocks (drop head, append tail) instead of clear()+rebuild every poll, so long sessions stop flashing; jumps still rebuild. Relative paths linkify against the shell's live directory (OSC 7 via the snapshot), else its configured start dir, else the app dir — the Start Directory menu now also fixes relative detection for shells without OSC 7.
 - v0.4.13: start directory modes — each shell chooses App default (inherit Kilim's directory), Shell default (home), or a picked directory, radio-checked per shell in the Start Directory submenu; every new terminal starts in its shell's setting. v0.4.12 bare-string sidecars still read.
