@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" kilim ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!(" {panes}{exit_note}   [{}] Tab focus ^Tab tabs ^T theme PgUp/Dn Esc quit ", app.session.theme())),
+            Span::raw(format!(" {panes}{exit_note}   [{}] Tab focus A-Tab tab ^Tab tabs ^T theme PgUp/Dn ^Q quit ", app.session.theme())),
         ])),
         bar,
     );
@@ -445,7 +445,8 @@ mod live_tests {
 
     /// File panes paint full-bleed theme paper — padded line tails and
     /// rows below EOF carry the theme bg, matching the Qt code viewer
-    /// (regression: TUI showed terminal-default around the text).    #[test]
+    /// (regression: TUI showed terminal-default around the text).
+    #[test]
     fn file_pane_fills_theme_paper() {
         use ratatui::style::Color;
 

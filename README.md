@@ -26,8 +26,10 @@ Prerequisites: a recent stable Rust toolchain, Python 3.12+, `uv`.
 ```bash
 # TUI — runs straight from cargo
 cargo run -p kilim-tui -- layouts/default.json
-# Esc / Ctrl-Q quits, typing goes to the active terminal.
-# Tab / Ctrl-Tab cycle panes, PgUp/PgDn scrolls, Ctrl+T cycles themes.
+# A-Tab: Alt+Tab sends a real Tab to the active pane, Esc is the running app's,
+# typing goes to the active terminal, and Ctrl-Q quits.
+# Tab / Shift-Tab cycle pane focus, Ctrl-Tab switches tabs in a Tabs group,
+# PgUp/PgDn scrolls, Ctrl+T cycles themes.
 
 # Qt surface — needs PySide6 plus the compiled core
 uv venv && uv pip install maturin PySide6

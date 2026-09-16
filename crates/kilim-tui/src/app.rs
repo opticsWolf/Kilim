@@ -3,8 +3,72 @@
 
 use std::collections::HashMap;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kilim_core::Session;
+
+/// What a key means to Kilim itself. Everything not claimed here belongs to
+/// the running app and is forwarded to the active terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Quit,
+    RestartPanes,
+    CycleTheme(i32),
+    CycleTab(i32),
+    FocusCycle(i32),
+    Scroll(i32),
+    Send(&'static [u8]),
+    SendText(char),
+    ControlByte(char),
+    AppCursor(KeyCode),
+    Ignore,
+}
+
+/// The whole TUI key map in one pure function (unit-tested at the bottom).
+///
+/// Tab stays Kilim's native key: plain Tab cycles pane focus, Ctrl+Tab
+/// switches tabs inside a Tabs group. Alt+Tab is the shell's — it forwards a
+/// real Tab (Alt+Shift+Tab a back-tab) to the active pane. Esc always belongs
+/// to the running app, exactly like the Qt surface; Ctrl+Q quits.
+fn key_action(k: &KeyEvent) -> Action {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = k.modifiers.contains(KeyModifiers::ALT);
+    match k.code {
+        KeyCode::Char('q') if ctrl => Action::Quit,
+        // Restart dead panes (ensure_terms replaces exited handles).
+        KeyCode::Char('r') if ctrl => Action::RestartPanes,
+        // Cycle code theme (shared with Qt FilePane), persist.
+        KeyCode::Char('t') if ctrl => Action::CycleTheme(if shift { -1 } else { 1 }),
+        // Alt+Tab hands the key over to the active pane.
+        KeyCode::Tab if alt => Action::Send(if shift { b"\x1b[Z" } else { b"\t" }),
+        KeyCode::BackTab if alt => Action::Send(b"\x1b[Z"),
+        // Tab switching within a Tabs group (Ctrl+Tab). Plain Tab = focus.
+        KeyCode::Tab if ctrl => Action::CycleTab(if shift { -1 } else { 1 }),
+        KeyCode::BackTab if ctrl => Action::CycleTab(-1),
+        // Focus cycle.
+        KeyCode::Tab => Action::FocusCycle(if shift { -1 } else { 1 }),
+        KeyCode::BackTab => Action::FocusCycle(-1),
+        // Scrollback (stays until next input snaps to tail).
+        KeyCode::PageUp => Action::Scroll(10),
+        KeyCode::PageDown => Action::Scroll(-10),
+        // Control codes.
+        KeyCode::Char('c') if ctrl => Action::Send(b"\x03"),
+        KeyCode::Char('d') if ctrl => Action::Send(b"\x04"),
+        // Ctrl+letter -> control byte (Ctrl-A..Z), else text.
+        KeyCode::Char(c) if ctrl && c.is_ascii_alphabetic() => Action::ControlByte(c),
+        KeyCode::Char(c) => Action::SendText(c),
+        KeyCode::Enter => Action::Send(b"\r"),
+        KeyCode::Backspace => Action::Send(b"\x7f"),
+        KeyCode::Delete => Action::Send(b"\x1b[3~"),
+        // Cursor keys follow DECCKM: applications (vim, less) request SS3
+        // (\x1bO) instead of CSI (\x1b[).
+        KeyCode::Up | KeyCode::Down | KeyCode::Right | KeyCode::Left | KeyCode::Home
+        | KeyCode::End => Action::AppCursor(k.code),
+        // Esc belongs to the running app (vim, less, fzf, agent TUIs).
+        KeyCode::Esc => Action::Send(b"\x1b"),
+        _ => Action::Ignore,
+    }
+}
 
 pub struct App {
     pub session: Session,
@@ -192,63 +256,34 @@ impl App {
                     // Windows sends Press + Release per stroke: act on
                     // Press (and Repeat for held keys) or input doubles.
                     if matches!(k.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-                    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-                    match k.code {
-                        KeyCode::Char('q') if ctrl => break 'main,
-                        // Restart dead panes (ensure_terms replaces exited handles).
-                        KeyCode::Char('r') if ctrl => {
+                    match key_action(&k) {
+                        Action::Quit => break 'main,
+                        Action::RestartPanes => {
                             let _ = self.session.ensure_terms().await;
                         }
-                        // Cycle code theme (shared with Qt FilePane), persist.
-                        KeyCode::Char('t') if ctrl => {
-                            self.cycle_theme(if shift { -1 } else { 1 });
-                        }
-                        // Tab switching within a Tabs group (Ctrl+Tab). Plain Tab = focus.
-                        KeyCode::Tab if ctrl => {
+                        Action::CycleTheme(dir) => self.cycle_theme(dir),
+                        Action::CycleTab(dir) => {
                             let a = self.session.layout.active.clone();
-                            self.session.layout.cycle_tab(&a, if shift { -1 } else { 1 });
+                            self.session.layout.cycle_tab(&a, dir);
                         }
-                        KeyCode::BackTab if ctrl => {
-                            let a = self.session.layout.active.clone();
-                            self.session.layout.cycle_tab(&a, -1);
-                        }
-                        // Focus cycle.
-                        KeyCode::Tab => self.cycle_focus(if shift { -1 } else { 1 }),
-                        KeyCode::BackTab => self.cycle_focus(-1),
-                        // Scrollback (stays until next input snaps to tail).
-                        KeyCode::PageUp => {
-                            let a = self.session.layout.active.clone();
-                            *self.scroll.entry(a).or_insert(0) += 10;
-                        }
-                        KeyCode::PageDown => {
+                        Action::FocusCycle(dir) => self.cycle_focus(dir),
+                        Action::Scroll(steps) => {
                             let a = self.session.layout.active.clone();
                             let e = self.scroll.entry(a).or_insert(0);
-                            *e = e.saturating_sub(10);
-                        }
-                        // Control codes.
-                        KeyCode::Char('c') if ctrl => self.send(b"\x03").await,
-                        KeyCode::Char('d') if ctrl => self.send(b"\x04").await,
-                        KeyCode::Char(c) => {
-                            // Ctrl+letter -> control byte (Ctrl-A..Z), else text.
-                            if ctrl && c.is_ascii_alphabetic() {
-                                let b = (c.to_ascii_uppercase() as u8) & 0x1F;
-                                self.send(&[b]).await;
+                            if steps >= 0 {
+                                *e += steps as usize;
                             } else {
-                                self.send(c.to_string().as_bytes()).await;
+                                *e = e.saturating_sub((-steps) as usize);
                             }
                         }
-                        KeyCode::Enter => self.send(b"\r").await,
-                        KeyCode::Backspace => self.send(b"\x7f").await,
-                        KeyCode::Delete => self.send(b"\x1b[3~").await,
-                        // Cursor keys follow DECCKM: applications (vim, less)
-                        // request SS3 (\x1bO) instead of CSI (\x1b[).
-                        KeyCode::Up | KeyCode::Down | KeyCode::Right | KeyCode::Left
-                        | KeyCode::Home | KeyCode::End => {
-                            self.send_app_cursor(k.code).await;
+                        Action::Send(bytes) => self.send(bytes).await,
+                        Action::SendText(c) => self.send(c.to_string().as_bytes()).await,
+                        Action::ControlByte(c) => {
+                            let b = (c.to_ascii_uppercase() as u8) & 0x1F;
+                            self.send(&[b]).await;
                         }
-                        KeyCode::Esc => break 'main,
-                        _ => {}
+                        Action::AppCursor(code) => self.send_app_cursor(code).await,
+                        Action::Ignore => {}
                     }
                     }
                 }
@@ -262,5 +297,98 @@ impl App {
         disable_raw_mode()?;
         execute!(term.backend_mut(), LeaveAlternateScreen)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn escape_reaches_the_terminal_and_ctrl_q_quits() {
+        // Esc is the running app's key, exactly like the Qt surface.
+        assert_eq!(
+            key_action(&key(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Send(b"\x1b")
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            Action::Quit
+        );
+    }
+
+    #[test]
+    fn tab_is_native_and_alt_tab_reaches_the_pane() {
+        let none = KeyModifiers::NONE;
+        // Plain Tab / Shift-Tab stay Kilim's focus cycle.
+        assert_eq!(
+            key_action(&key(KeyCode::Tab, none)),
+            Action::FocusCycle(1)
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::BackTab, none)),
+            Action::FocusCycle(-1)
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::Tab, KeyModifiers::SHIFT)),
+            Action::FocusCycle(-1)
+        );
+        // Ctrl+Tab switches tabs within a Tabs group.
+        assert_eq!(
+            key_action(&key(KeyCode::Tab, KeyModifiers::CONTROL)),
+            Action::CycleTab(1)
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::BackTab, KeyModifiers::CONTROL)),
+            Action::CycleTab(-1)
+        );
+        // Alt+Tab forwards a real Tab (Alt+Shift+Tab a back-tab) to the pane.
+        assert_eq!(
+            key_action(&key(KeyCode::Tab, KeyModifiers::ALT)),
+            Action::Send(b"\t")
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::BackTab, KeyModifiers::ALT)),
+            Action::Send(b"\x1b[Z")
+        );
+        assert_eq!(
+            key_action(&key(
+                KeyCode::Tab,
+                KeyModifiers::ALT | KeyModifiers::SHIFT
+            )),
+            Action::Send(b"\x1b[Z")
+        );
+    }
+
+    #[test]
+    fn terminal_keys_keep_their_sequences() {
+        let none = KeyModifiers::NONE;
+        let sequences: [(KeyCode, &[u8]); 3] = [
+            (KeyCode::Enter, b"\r"),
+            (KeyCode::Backspace, b"\x7f"),
+            (KeyCode::Delete, b"\x1b[3~"),
+        ];
+        for (code, bytes) in sequences {
+            assert_eq!(key_action(&key(code, none)), Action::Send(bytes));
+        }
+        assert_eq!(
+            key_action(&key(KeyCode::Char('a'), none)),
+            Action::SendText('a')
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::Char('A'), KeyModifiers::CONTROL)),
+            Action::ControlByte('A')
+        );
+        assert_eq!(
+            key_action(&key(KeyCode::Up, none)),
+            Action::AppCursor(KeyCode::Up)
+        );
+        assert_eq!(key_action(&key(KeyCode::PageUp, none)), Action::Scroll(10));
+        assert_eq!(key_action(&key(KeyCode::PageDown, none)), Action::Scroll(-10));
+        assert_eq!(key_action(&key(KeyCode::F(1), none)), Action::Ignore);
     }
 }
