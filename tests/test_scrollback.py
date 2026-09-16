@@ -299,8 +299,8 @@ def test_terminal_menu_launches_shell():
         app.processEvents()
 
 
-def test_shell_start_directory_menu_saves_resets_and_forwards(tmp_path):
-    """Start Directory submenu: pick per shell, persist, reset, forward."""
+def test_shell_start_directory_modes_save_and_forward(tmp_path):
+    """Start Directory: App/Shell/custom per shell, persist, forward."""
     import json
     from pathlib import Path as _Path
     from unittest.mock import AsyncMock, patch
@@ -313,55 +313,78 @@ def test_shell_start_directory_menu_saves_resets_and_forwards(tmp_path):
         assert shells, "expected at least one shell on this machine"
         label = shells[0][0]
 
-        def start_menu():
-            return next(
+        def shell_menu():
+            start = next(
                 a.menu() for a in w.titleBar.terminal_menu.actions()
                 if a.text() == "Start Directory"
             )
+            return next(
+                a.menu() for a in start.actions()
+                if a.text() == label
+            )
 
-        names = [
-            a.text() for a in start_menu().actions()
-            if a.text() not in ("", "Reset all to inherited")
-        ]
-        assert len(names) == len(shells)
-        assert all(n.endswith("inherited") for n in names)
+        # App default checked everywhere out of the box.
+        acts = {
+            a.text(): a
+            for a in shell_menu().actions()
+        }
+        assert acts["App default"].isChecked()
+        assert not acts["Shell default"].isChecked()
+        assert w._shell_cwd_arg(label) is None
 
+        # Shell default resolves to home and forwards it to core.
+        acts["Shell default"].trigger()
+        assert w._shell_dir_spec(label)["mode"] == "home"
+        sidecar = json.loads(_Path(w.perspective_path).read_text(encoding="utf-8"))
+        assert sidecar["shell_cwds"][label]["mode"] == "home"
+        with patch.object(CoreSession, "spawn_term", new=AsyncMock()) as sp:
+            w.launch_shell(label, shells[0][1], shells[0][2])
+        assert sp.await_args.kwargs.get("cwd") == str(_Path.home())
+
+        # Back to App default forwards nothing (inherit).
+        next(
+            a for a in shell_menu().actions()
+            if a.text() == "App default"
+        ).trigger()
+        with patch.object(CoreSession, "spawn_term", new=AsyncMock()) as sp:
+            w.launch_shell(label, shells[0][1], shells[0][2])
+        assert sp.await_args.kwargs.get("cwd") is None
+
+        # A picked directory becomes the custom mode, shown and persisted.
         target = tmp_path / "work"
         target.mkdir()
-        act = next(
-            a for a in start_menu().actions() if a.text().startswith(label)
+        choose = next(
+            a for a in shell_menu().actions() if a.text() == "Choose\u2026"
         )
         with patch(
             "PySide6.QtWidgets.QFileDialog.getExistingDirectory",
             return_value=str(target),
-        ) as dlg:
-            act.trigger()
-        assert dlg.call_count == 1
-        assert w.shell_cwds[label] == str(target)
-        sidecar = json.loads(_Path(w.perspective_path).read_text(encoding="utf-8"))
-        assert sidecar["shell_cwds"][label] == str(target)
-        # Menu rebuilt showing the choice; launch forwards it to core.
-        assert f"{label} \u2014 {target}" in [
-            a.text() for a in start_menu().actions()
+        ):
+            choose.trigger()
+        assert w._shell_dir_spec(label) == {"mode": "custom", "dir": str(target)}
+        assert f"{target}" in [
+            a.text() for a in shell_menu().actions() if a.isChecked()
         ]
         with patch.object(CoreSession, "spawn_term", new=AsyncMock()) as sp:
             w.launch_shell(label, shells[0][1], shells[0][2])
-        assert sp.await_count == 1
         assert sp.await_args.kwargs.get("cwd") == str(target)
-        # Reset clears every custom dir (sidecar + labels).
-        reset = next(
-            a for a in start_menu().actions()
-            if a.text() == "Reset all to inherited"
+
+        # Legacy v0.4.12 sidecars (bare-string customs) still read.
+        w.shell_cwds[label] = "C:\\old-place"
+        assert w._shell_dir_spec(label) == {"mode": "custom", "dir": "C:\\old-place"}
+
+        # Reset clears every shell back to App default.
+        start = next(
+            a.menu() for a in w.titleBar.terminal_menu.actions()
+            if a.text() == "Start Directory"
         )
-        reset.trigger()
+        next(
+            a for a in start.actions()
+            if a.text() == "Reset all to App default"
+        ).trigger()
         assert w.shell_cwds == {}
         sidecar = json.loads(_Path(w.perspective_path).read_text(encoding="utf-8"))
         assert sidecar["shell_cwds"] == {}
-        assert all(
-            a.text().endswith("inherited")
-            for a in start_menu().actions()
-            if a.text() not in ("", "Reset all to inherited")
-        )
     finally:
         w.close()
         app.processEvents()

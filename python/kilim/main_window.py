@@ -77,7 +77,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self._kilim_by_lace = register_kilim_lace_themes()
         self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "syntax": {}, "terminal": {}}
         self.file_history: list[str] = []  # viewer files, newest first
-        self.shell_cwds: dict[str, str] = {}  # shell label -> start dir
+        self.shell_cwds: dict = {}  # shell label -> {mode, dir} (see _shell_dir_spec)
         self.default_shell: tuple[str, str, list[str]] | None = None
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
         self._viewer_area = None  # viewer tab group's DockAreaWidget
@@ -158,8 +158,10 @@ class KilimWindow(FramelessLaceMainWindow):
         shell_cwds = saved.get("shell_cwds")
         if isinstance(shell_cwds, dict):
             # Machine-local paths: sidecar, never the shared layout.
+            # Values are {mode, dir} specs (plain strings = v0.4.12 customs).
             self.shell_cwds = {
-                str(k): str(v) for k, v in shell_cwds.items()
+                str(k): v for k, v in shell_cwds.items()
+                if isinstance(v, (dict, str))
             }
         history = saved.get("file_history")
         if isinstance(history, list):
@@ -399,40 +401,96 @@ class KilimWindow(FramelessLaceMainWindow):
             act.triggered.connect(
                 lambda _c=False, n=label, c=cmd, a=args: self.launch_shell(n, c, a)
             )
-        # Per-shell start directories (sidecar; inherited cwd when unset).
+        # Per-shell start directories (sidecar; App default when unset).
+        # Each shell chooses between the app's directory, the shell's own
+        # platform default (home), and a picked directory — every new
+        # terminal spawned from that shell starts there.
         menu.addSeparator()
         start = menu.addMenu("Start Directory")
         for label, _cmd, _args in entries:
-            current = self.shell_cwds.get(label)
-            act = start.addAction(
-                f"{label} \u2014 {current}" if current else f"{label} \u2014 inherited"
+            spec = self._shell_dir_spec(label)
+            sub = start.addMenu(label)
+            group = QActionGroup(sub)
+            group.setExclusive(True)
+            for mode, text in (("app", "App default"), ("home", "Shell default")):
+                act = sub.addAction(text)
+                act.setCheckable(True)
+                act.setChecked(spec["mode"] == mode)
+                act.triggered.connect(
+                    lambda _c=False, l=label, m=mode: self.set_shell_dir_mode(l, m)
+                )
+                group.addAction(act)
+            custom = sub.addAction(
+                spec["dir"] if spec["mode"] == "custom" and spec["dir"] else "Choose\u2026"
             )
-            act.triggered.connect(
+            custom.setCheckable(True)
+            custom.setChecked(spec["mode"] == "custom")
+            custom.triggered.connect(
                 lambda _c=False, l=label: self.choose_shell_cwd(l)
             )
+            group.addAction(custom)
         if entries:
             start.addSeparator()
-            reset = start.addAction("Reset all to inherited")
+            reset = start.addAction("Reset all to App default")
             reset.triggered.connect(lambda _c=False: self.reset_shell_cwds())
+        else:
+            none = start.addAction("No shells found")
+            none.setEnabled(False)
+
+    def _shell_dir_spec(self, label: str) -> dict:
+        """Normalized start-dir spec: {mode, dir} (app/home/custom)."""
+        raw = self.shell_cwds.get(label)
+        if isinstance(raw, dict):
+            mode = raw.get("mode")
+            return {
+                "mode": mode if mode in ("app", "home", "custom") else "app",
+                "dir": str(raw.get("dir") or ""),
+            }
+        if isinstance(raw, str) and raw:
+            return {"mode": "custom", "dir": raw}  # v0.4.12 sidecars
+        return {"mode": "app", "dir": ""}
+
+    def _shell_cwd_arg(self, label: str) -> str | None:
+        """Resolved cwd for spawn (None = inherit the app directory)."""
+        from pathlib import Path
+
+        spec = self._shell_dir_spec(label)
+        if spec["mode"] == "home":
+            return str(Path.home())
+        if spec["mode"] == "custom":
+            return spec["dir"] or None
+        return None
+
+    def set_shell_dir_mode(self, label: str, mode: str) -> None:
+        """App/Shell default for this shell; remembered in the sidecar."""
+        if mode not in ("app", "home"):
+            return
+        spec = self._shell_dir_spec(label)
+        spec["mode"] = mode
+        self.shell_cwds[label] = spec
+        self._save_sidecar(shell_cwds=self.shell_cwds)
+        self._build_terminal_menu()
 
     def choose_shell_cwd(self, label: str) -> None:
-        """Pick where this shell starts; remembered in the sidecar."""
+        """Pick a custom start directory for this shell (sidecar)."""
         from pathlib import Path
 
         from PySide6.QtWidgets import QFileDialog
 
-        current = self.shell_cwds.get(label)
+        spec = self._shell_dir_spec(label)
         picked = QFileDialog.getExistingDirectory(
-            self, f"Start directory for {label}", current or str(Path.home())
+            self, f"Start directory for {label}",
+            spec["dir"] or str(Path.home()),
         )
         if not picked:
-            return  # cancelled: keep whatever was there
-        self.shell_cwds[label] = picked
+            self._build_terminal_menu()  # resync the radio checks
+            return
+        self.shell_cwds[label] = {"mode": "custom", "dir": picked}
         self._save_sidecar(shell_cwds=self.shell_cwds)
         self._build_terminal_menu()
 
     def reset_shell_cwds(self) -> None:
-        """Forget every custom start directory (back to inherited)."""
+        """Forget every custom start directory (back to App default)."""
         if not self.shell_cwds:
             return
         self.shell_cwds = {}
@@ -838,9 +896,9 @@ class KilimWindow(FramelessLaceMainWindow):
     def launch_shell(self, name: str, cmd: str, args: list[str]):
         """Spawn a new shell pane (core) and dock it left.
 
-        Starts in the shell's configured directory (Terminal menu), or
-        inherits the Kilim process cwd when unset — the core falls back
-        to inherit for missing dirs too, never an error.
+        Starts in the shell's configured directory (Terminal menu:
+        App default, Shell default, or a picked dir) — the core falls
+        back to inherit for missing dirs too, never an error.
         """
         from lace import DockWidget
         from lace import DockWidgetArea
@@ -851,7 +909,7 @@ class KilimWindow(FramelessLaceMainWindow):
             self._term_seq += 1
             pid = f"term-new{self._term_seq}"
         self.bridge.call(
-            lambda: self.bridge.core.spawn_term(pid, name, cmd, args, 24, 80, 5000, cwd=self.shell_cwds.get(name))
+            lambda: self.bridge.core.spawn_term(pid, name, cmd, args, 24, 80, 5000, cwd=self._shell_cwd_arg(name))
         )
         inner = TerminalPane(self.bridge, pid, self.terminal_theme)
         dock = DockWidget(name)
