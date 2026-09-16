@@ -186,6 +186,12 @@ impl CoreSession {
         })
     }
 
+    /// The platform default shell (cmd, args) — what layout panes with an
+    /// empty cmd spawn. Lets the Qt side map cmd-less panes to a menu label.
+    fn default_shell_cmd(&self) -> (String, Vec<String>) {
+        kilim_core::shell::default_shell()
+    }
+
     /// Override a term pane's start directory (Qt sidecar restore stamps
     /// the per-shell choice before ensure_terms spawns; restart_term
     /// keeps it). Synchronous: it only mutates the pane inventory.

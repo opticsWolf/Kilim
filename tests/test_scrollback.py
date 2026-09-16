@@ -1637,6 +1637,87 @@ def _wait_printed_cwd(app, term, pid="term1", timeout=30.0):
     raise AssertionError("probe never printed its cwd")
 
 
+def test_cmdless_pane_resolves_to_platform_default():
+    """A layout term with no cmd maps to the core platform-default shell.
+
+    The default layout's term1 is exactly this shape (title "shell",
+    no cmd) — without this fallback the stamp silently skips it and
+    the Start Directory never applies after a restart."""
+    from kilim import shells
+
+    def _base(cmd):
+        b = cmd.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        return b[:-4] if b.endswith(".exe") else b
+
+    app, w = _window()
+    try:
+        core_cmd = w.bridge.core.default_shell_cmd()[0]
+        want = next(
+            (label for label, cmd, _a in shells.find_shells()
+             if _base(cmd) == _base(core_cmd)),
+            None,
+        )
+        assert want is not None, "core default matches no menu shell"
+        assert w._resolve_shell_label({"title": "shell", "kind": "term"}) == want
+        assert w._resolve_shell_label(
+            {"title": "shell", "kind": "term", "cmd": ""}) == want
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_default_shaped_pane_restores_start_dir(tmp_path):
+    """Restart, default layout shape: cmd-less term1 opens in the dir.
+
+    Every discovered shell gets the same custom dir, so whichever the
+    pane resolves to, the stamp must land: PowerShell's own prompt
+    (PS <cwd>>) proves the live cwd."""
+    import json
+    import os
+    import time
+    from pathlib import Path as _Path
+
+    from PySide6.QtWidgets import QApplication
+
+    from kilim import shells
+    from kilim.qt_app import KilimWindow
+
+    entries = shells.find_shells()
+    assert entries, "expected at least one shell on this machine"
+    work = tmp_path / "work"
+    work.mkdir()
+    base = json.loads(_Path("layouts/default.json").read_text(encoding="utf-8"))
+    base["panes"] = [{"id": "term1", "title": "shell", "kind": "term"}]
+    layout_path = tmp_path / "k.json"
+    layout_path.write_text(json.dumps(base), encoding="utf-8")
+    sidecar_path = tmp_path / "k.perspective.json"
+    sidecar_path.write_text(json.dumps({
+        "shell_cwds": {
+            label: {"mode": "custom", "dir": str(work)}
+            for label, _cmd, _args in entries
+        }
+    }), encoding="utf-8")
+    app = QApplication.instance() or QApplication([])
+    w = KilimWindow(str(layout_path), str(sidecar_path))
+    w.show()
+    try:
+        deadline = time.time() + 40
+        seen = ""
+        while time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.3)
+            snap = w.bridge.call(
+                lambda: w.bridge.core.snapshot_term("term1", 60, None)
+            )
+            seen = "".join("".join(c[0] for c in row) for row in snap[2])
+            if os.path.normcase(str(work)) in os.path.normcase(seen):
+                break
+        assert os.path.normcase(str(work)) in os.path.normcase(seen), seen[-200:]
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_layout_term_restores_custom_start_dir(tmp_path):
     """Restart: a layout term spawns in its shell's Start Directory."""
     import os
@@ -1697,7 +1778,11 @@ def test_resolve_shell_label_and_missing_fallback(tmp_path):
         assert w._resolve_shell_label(
             {"title": "unrelated", "cmd": cmd, "kind": "term"}
         ) == label
-        assert w._resolve_shell_label({"title": "unrelated", "kind": "term"}) is None
+        # No title, no cmd: falls back to the platform default shell
+        # (what the spawn uses), not None.
+        assert w._resolve_shell_label(
+            {"title": "unrelated", "kind": "term"}
+        ) == w._resolve_shell_label({"title": "shell", "kind": "term"})
         w.shell_cwds[label] = {"mode": "custom", "dir": str(tmp_path / "nope")}
         assert w._shell_cwd_arg(label) is None
         w.shell_cwds[label] = {"mode": "custom", "dir": str(tmp_path)}

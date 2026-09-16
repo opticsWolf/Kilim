@@ -1,6 +1,7 @@
 # Changelog
 
 Full version history (condensed from the original dev-log README).
+- v0.4.24: Start Directory applies to the default terminal too — layout panes with no cmd (like the default term1) spawn the platform default shell, but the restart stamp only matched by title/cmd and silently skipped them. The stamp now asks the core for that default cmd (new default_shell_cmd call), so cmd-less panes map to the same shell the spawn uses.
 - v0.4.23: width-only resizes rebuild again — the same-window fast path matched on rows+start alone, so a width-only rescale subset-repainted instead of rebuilding: the width bookkeeping rotted and shift surgery stayed disabled for every later move. The fast path now requires the same width too.
 - v0.4.22: large rescales reflow at once — a discrete grid jump (maximize, snap, big yank: 8+ rows or 16+ cols in one poll) now applies immediately instead of waiting out the drag-settle debounce, so the final state starts repainting on the same poll. Small per-poll motion still coalesces to zero mid-gesture resizes.
 - v0.4.21: per-shell Start Directory survives restart — the sidecar choice is now stamped onto layout term panes (new set_pane_cwd bridge call) before ensure_terms spawns them, so the layout terminals reopen in their configured dir — and restart_term keeps it too. A custom dir that no longer exists falls back to App default (inherit) instead of a broken start: checked in Python at resolve time, re-checked by the core at spawn.

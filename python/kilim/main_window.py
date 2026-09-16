@@ -472,13 +472,14 @@ class KilimWindow(FramelessLaceMainWindow):
                 except Exception:  # noqa: BLE001 - spawn falls back to layout cwd
                     pass
 
-    @staticmethod
-    def _resolve_shell_label(pane: dict) -> str | None:
-        """Layout term pane -> `shells` menu label (title, then cmd).
+    def _resolve_shell_label(self, pane: dict) -> str | None:
+        """Layout term pane -> `shells` menu label (title, cmd, default).
 
         Titles are free text ("shell", "logs"...), so an exact title
-        hit wins and the pane cmd's basename decides the rest — layouts
-        stay portable, no new keys."""
+        hit wins; then the pane cmd's basename decides. A pane with no
+        cmd spawns the platform default (`shell::default_shell` in the
+        core) — ask the core for that cmd so cmd-less panes map to the
+        same shell the spawn uses. Layouts stay portable, no new keys."""
         from kilim import shells
 
         entries = shells.find_shells()
@@ -492,6 +493,12 @@ class KilimWindow(FramelessLaceMainWindow):
             return base[:-4] if base.endswith(".exe") else base
 
         want = _base(str(pane.get("cmd") or ""))
+        if not want:
+            try:
+                default_cmd = self.bridge.core.default_shell_cmd()[0]
+            except Exception:  # noqa: BLE001 - no label without a cmd
+                return None
+            want = _base(str(default_cmd))
         if not want:
             return None
         for label, scmd, _args in entries:
