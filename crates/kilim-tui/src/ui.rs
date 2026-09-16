@@ -133,8 +133,12 @@ fn render_pane(f: &mut Frame, app: &mut App, pane_id: &str, area: Rect) {
             let start = total.saturating_sub(vis_h).saturating_sub(off);
             let rows = screen.styled_range(start, vis_h);
             let (cx, cy_abs) = screen.absolute_cursor();
+            // No soft block and no hardware cursor while the app hides
+            // its cursor (DECTCEM ?25l) to draw its own — otherwise two
+            // cursors blink in parallel. Visible by default (?25h).
             let cursor_here =
-                cy_abs >= start && cy_abs < start + vis_h && cx < vis_w;
+                cy_abs >= start && cy_abs < start + vis_h && cx < vis_w
+                && screen.mode().has_private(25);
             let mut lines: Vec<Line> = rows
                 .iter()
                 .enumerate()

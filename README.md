@@ -17,7 +17,7 @@ links: a click opens the file in a viewer dock.
 | Code | syntect, full-bleed theme paper | same spans, Qt paint fast path |
 | Markdown | highlighted source | pure-Rust HTML (WebEngine, rich-text fallback) |
 | Scrollback | PgUp/PgDn | external scrollbar, wheel holds position |
-| Cursor | hardware + reverse-video cell | reverse-video block, blinking, focus-gated |
+| Cursor | hardware + reverse-video cell, both follow DECTCEM (?25) | reverse-video block, blinking, focus-gated, hidden with DECTCEM (?25) |
 
 ## Quickstart
 

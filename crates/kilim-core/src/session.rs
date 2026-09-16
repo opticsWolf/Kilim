@@ -204,7 +204,7 @@ impl Session {
     /// One-call snapshot for bridges (replaces total+range+cursor trips).
     /// `anchor=None` follows the tail; `Some(a)` holds scrollback position.
     /// modes = (app_cursor, bracketed_paste, mouse_proto, sgr_mouse,
-    /// alt_screen, bell). dirty = history-absolute changed rows.
+    /// alt_screen, bell, cursor_visible). dirty = history-absolute changed rows.
     /// cwd = live shell dir (OSC 7/9;9), None until the first report.
     pub async fn snapshot_term(
         &self,
@@ -217,7 +217,7 @@ impl Session {
             usize,
             Vec<Vec<(String, String, String, u8)>>,
             (usize, usize),
-            (bool, bool, u16, bool, bool, bool),
+            (bool, bool, u16, bool, bool, bool, bool),
             Vec<usize>,
             Option<String>,
         ),

@@ -127,7 +127,9 @@ impl TermHandle {
     /// only these). Draining events here bounds the log: nobody else does.
     /// cwd = the shell's live directory (OSC 7/9;9), None until the first
     /// report — callers fall back to the pane's configured cwd, then the
-    /// process cwd.
+    /// process cwd. cursor_visible = DECTCEM (?25): frontends must not
+    /// draw their own cursor block while the app hides its cursor to
+    /// draw its own (fullscreen TUIs) — otherwise two cursors blink.
     pub async fn snapshot_tail(
         &self,
         rows: usize,
@@ -137,7 +139,7 @@ impl TermHandle {
         usize,
         Vec<Vec<(String, String, String, u8)>>,
         (usize, usize),
-        (bool, bool, u16, bool, bool, bool),
+        (bool, bool, u16, bool, bool, bool, bool),
         Vec<usize>,
         Option<String>,
     ) {
@@ -158,13 +160,14 @@ impl TermHandle {
             mode.sgr_mouse(),       // 1006 SGR encoding
             mode.is_alt_screen(),
         );
+        let cursor_visible = mode.has_private(25); // DECTCEM: app hides cursor
         // Drain the event log (bell + titles/cwd: titles are the shell's
         // business — Lace tab titles are pane identity, not synced).
         let events = screen.take_events();
         let bell = events
             .iter()
             .any(|e| matches!(e, stitch_pty::terminal::events::TermEvent::Bell));
-        let modes = (app_cursor, bracketed, mouse, sgr, alt, bell);
+        let modes = (app_cursor, bracketed, mouse, sgr, alt, bell, cursor_visible);
         let base = total.saturating_sub(screen.lines());
         let dirty: Vec<usize> = screen
             .take_dirty_rows()

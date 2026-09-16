@@ -172,6 +172,7 @@ class TerminalPane(QWidget):
         self._cursor_at = None  # absolute (x, y) of the painted cursor
         self._sel = None  # selection in absolute history coords (or None)
         self._modes = _modes_dict(None)  # DEC modes from latest snapshot
+        self._cursor_visible = True  # DECTCEM (?25): app hides -> no block
         self._bell_until = 0.0  # monotonic deadline of the bell flash
         self._seen_total = None  # activity-badge baseline
         self._set_badge = lambda on: None  # wired by the window (tab dot)
@@ -313,6 +314,13 @@ class TerminalPane(QWidget):
     def _render(self, snap):
         self._ensure_theme()
         self._modes = snap.get("modes") or _modes_dict(None)
+        if self._modes.get("cursor_visible", True) != getattr(
+            self, "_cursor_visible", True
+        ):
+            # DECTCEM flip (?25l/h): the block must vanish/appear now, but
+            # nothing else moved — force a rebuild so the row repaints.
+            self._cursor_visible = self._modes.get("cursor_visible", True)
+            self._paint_rows = -1
         cwd = snap.get("cwd") or None
         if cwd != self._link_cwd:
             # Fresh base dir (cd, restart, new pane): cached hits resolved
@@ -653,8 +661,12 @@ class TerminalPane(QWidget):
         """Viewport (row, col) of the soft block cursor, or None.
 
         Focus-gated like a real terminal: an unfocused pane shows no
-        block, and loses it the moment focus leaves the view."""
+        block, and loses it the moment focus leaves the view. Also
+        DECTCEM-gated: an app that hides its cursor (?25l) to draw its
+        own must not get our block blinking beside it."""
         if not self._caret_on or not self.view.hasFocus():
+            return None
+        if not self._modes.get("cursor_visible", True):
             return None
         cx, cy_abs = cursor
         row = cy_abs - start
@@ -688,6 +700,8 @@ class TerminalPane(QWidget):
         """Toggle the block cursor phase; only its own row repaints."""
         if not self.view.hasFocus():
             return  # timer raced a blur: nothing to blink
+        if not self._modes.get("cursor_visible", True):
+            return  # app hid its cursor: no block to blink, no churn
         if QApplication.mouseButtons() != Qt.NoButton:
             return  # live drag: leave the selection alone
         self._caret_on = not self._caret_on

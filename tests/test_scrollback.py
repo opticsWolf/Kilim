@@ -848,10 +848,79 @@ def test_snapshot_carries_dec_modes():
         total, start, cells, cursor, modes, dirty, cwd = w.bridge.call(
             lambda: w.bridge.core.snapshot_term("term1", 10, None)
         )
-        app_cursor, bracketed, mouse, sgr, alt, bell = modes
+        app_cursor, bracketed, mouse, sgr, alt, bell, cursor_visible = modes
         assert isinstance(app_cursor, bool) and isinstance(mouse, int)
         assert mouse == 0 and alt is False  # plain PowerShell: no modes
         assert bell is False and isinstance(dirty, list)
+        assert cursor_visible is True  # DECTCEM: visible until ?25l
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_hidden_hardware_cursor_suppresses_the_soft_block():
+    """?25l (app draws its own cursor) kills our block; ?25h restores."""
+    import sys
+    import time
+
+    from kilim.qt_app import _modes_dict
+
+    app, w = _window()
+    try:
+        term = _term(w)
+        term._poller.stop()
+        for _ in range(20):
+            app.processEvents()
+            time.sleep(0.05)
+        term.view.setFocus()
+        app.processEvents()
+        assert term.view.hasFocus()
+        assert term._cursor_visible is True
+
+        script = (
+            "import sys, time; sys.stdout.write(sys.argv[1]); "
+            "sys.stdout.flush(); time.sleep(30)"
+        )
+
+        async def emit(seq, pid):
+            await term.bridge.core.spawn_term(
+                pid, pid, sys.executable, ["-c", script, seq], 24, 80, 500
+            )
+            for _ in range(60):
+                snap = await term.bridge.core.snapshot_term(pid, 24, None)
+                if (snap[4][6] is False) == (seq == "\x1b[?25l"):
+                    return snap
+                await __import__("asyncio").sleep(0.1)
+            raise AssertionError(f"DECTCEM {seq!r} never arrived")
+
+        async def bye(pid):
+            await term.bridge.core.terminate_term(pid, 1.0)
+
+        def render(snap):
+            rows = len(snap[2])
+            term._render({
+                "cells": snap[2], "cursor": snap[3], "start": snap[1],
+                "total": snap[0], "rows": rows, "cols": 80,
+                "modes": _modes_dict(snap[4]),
+                "dirty": [int(r) for r in snap[5]], "cwd": snap[6],
+            })
+            return rows
+
+        try:
+            snap = term.bridge.call(lambda: emit("\x1b[?25l", "probe-hide"))
+            rows = render(snap)
+            assert term._cursor_visible is False
+            assert term._caret_cell(snap[1], snap[3], rows) is None
+
+            snap = term.bridge.call(lambda: emit("\x1b[?25h", "probe-show"))
+            render(snap)
+            assert term._cursor_visible is True
+        finally:
+            for pid in ("probe-hide", "probe-show"):
+                try:
+                    term.bridge.call(lambda: bye(pid))
+                except Exception:  # noqa: BLE001 - already gone
+                    pass
     finally:
         w.close()
         app.processEvents()

@@ -43,15 +43,22 @@ def _x10_mouse(btn: int, col: int, row: int) -> bytes:
 
 
 def _modes_dict(m) -> dict:
-    """Snapshot modes 6-tuple -> named dict (stable defaults)."""
+    """Snapshot modes tuple -> named dict (stable defaults).
+
+    7-tuple (with trailing cursor_visible = DECTCEM ?25); older 6- and
+    5-tuples still read, defaulting the cursor to visible."""
     try:
-        app_cursor, bracketed, mouse, sgr, alt, bell = m
+        app_cursor, bracketed, mouse, sgr, alt, bell, cursor_visible = m
     except (TypeError, ValueError):
         try:
-            app_cursor, bracketed, mouse, sgr, alt = m
+            app_cursor, bracketed, mouse, sgr, alt, bell = m
         except (TypeError, ValueError):
-            app_cursor, bracketed, mouse, sgr, alt = (False, False, 0, False, False)
-        bell = False
+            try:
+                app_cursor, bracketed, mouse, sgr, alt = m
+            except (TypeError, ValueError):
+                app_cursor, bracketed, mouse, sgr, alt = (False, False, 0, False, False)
+            bell = False
+        cursor_visible = True
     return {
         "app_cursor": bool(app_cursor),
         "bracketed": bool(bracketed),
@@ -59,6 +66,7 @@ def _modes_dict(m) -> dict:
         "sgr": bool(sgr),
         "alt": bool(alt),
         "bell": bool(bell),
+        "cursor_visible": bool(cursor_visible),
     }
 
 
