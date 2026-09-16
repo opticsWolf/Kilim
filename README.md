@@ -101,8 +101,9 @@ itself — there is no resize handler in Kilim — and Lace's app-wide
 
 ## Themes
 
-Exactly 10, unified everywhere — shell defaults, code tokens, Markdown fences,
-page chrome, and dock chrome all follow one selection:
+Exactly 10, unified everywhere — code tokens and Markdown fences share one
+selection, terminal panes theme separately, and a Lace choice themes every
+part at once:
 
 `Kilim Midnight` / `Midnight Neo`, `Kilim Dark` / `Dark Neo`,
 `Kilim Neutral` / `Neutral Neo`, `Kilim Light` / `Light Neo`,

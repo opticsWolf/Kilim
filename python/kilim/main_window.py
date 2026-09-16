@@ -73,8 +73,9 @@ class KilimWindow(FramelessLaceMainWindow):
         self.md_panes: dict[str, QWidget] = {}
         self._badge_base: dict[str, str] = {}  # un-dotted tab titles
         self.lace_theme: str | None = None
+        self.terminal_theme: str | None = None
         self._kilim_by_lace = register_kilim_lace_themes()
-        self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "code": {}, "md": {}}
+        self._theme_actions: dict[str, dict[str, object]] = {"lace": {}, "code": {}, "terminal": {}}
         self.file_history: list[str] = []  # viewer files, newest first
         self.default_shell: tuple[str, str, list[str]] | None = None
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
@@ -86,6 +87,9 @@ class KilimWindow(FramelessLaceMainWindow):
         panes = {p["id"]: p for p in raw["panes"]}
         InitialActive = raw["layout"].get("active", "")
         self._active = InitialActive
+        # Terminals theme separately (Themes menu); layouts predating the
+        # key follow the code theme, which is what they always did.
+        self.terminal_theme = raw["layout"].get("terminal_theme") or self.bridge.core.theme()
         groups = layout_groups(raw["layout"]["root"])
         if not groups:  # schema fallback: creation order singletons
             groups = [[pid] for pid in panes]
@@ -98,7 +102,7 @@ class KilimWindow(FramelessLaceMainWindow):
                 kind = p["kind"]
                 inner: QWidget
                 if kind == "term":
-                    inner = TerminalPane(self.bridge, pid)
+                    inner = TerminalPane(self.bridge, pid, self.terminal_theme)
                 elif kind == "markdown":
                     inner = MarkdownPane(self.bridge, pid, p.get("path"))
                 else:
@@ -589,12 +593,13 @@ class KilimWindow(FramelessLaceMainWindow):
         pane.deleteLater()
 
     def _build_themes_menu(self):
-        """Themes menu: Lace chrome, code (Qt + TUI), markdown fences.
+        """Themes menu: Lace chrome, code (Qt + TUI), terminal (Qt terms).
 
         One shared registry (the Kilim ten, Kilim Midnight default) feeds
-        code + markdown alike, so no choice can silently fall back.
-        Choices persist: code/markdown into the layout file, Lace into
-        the sidecar.
+        every submenu, so no choice can silently fall back. Code covers
+        Markdown too (fences follow the code theme); terminals theme
+        separately. Choices persist: code/terminal into the layout file,
+        Lace into the sidecar.
         """
         from PySide6.QtGui import QActionGroup
 
@@ -627,7 +632,8 @@ class KilimWindow(FramelessLaceMainWindow):
             none = lace_menu.addAction("No Kilim themes")
             none.setEnabled(False)
 
-        # Code theme: TUI file panes + Qt FilePane share the session theme.
+        # Code theme: TUI file panes + Qt FilePane share the session theme;
+        # Qt MarkdownPanes follow it too (one apply, no divergence).
         code_menu = themes.addMenu("Code")
         code_group = QActionGroup(self)
         code_group.setExclusive(True)
@@ -642,40 +648,48 @@ class KilimWindow(FramelessLaceMainWindow):
             )
             code_group.addAction(act)
 
-        # Markdown fence theme: Qt preview only (TUI shows markdown source
-        # with this theme too, but has no menu — Ctrl+T cycles code only).
-        # Same eight as code: fences can never name a missing theme.
-        md_menu = themes.addMenu("Markdown")
-        md_group = QActionGroup(self)
-        md_group.setExclusive(True)
-        current_md = self.bridge.core.markdown_theme()
+        # Terminal theme: Qt terminal panes only. Same ten as code;
+        # an unset choice follows the code theme (the old behavior).
+        term_menu = themes.addMenu("Terminal")
+        term_group = QActionGroup(self)
+        term_group.setExclusive(True)
         for name in list_themes():
-            act = md_menu.addAction(name)
+            act = term_menu.addAction(name)
             act.setCheckable(True)
-            act.setChecked(name == current_md)
-            self._theme_actions["md"][name] = act
+            act.setChecked(name == self.terminal_theme)
+            self._theme_actions["terminal"][name] = act
             act.triggered.connect(
-                lambda _c=False, n=name: self.apply_markdown_theme(n)
+                lambda _c=False, n=name: self.apply_terminal_theme(n)
             )
-            md_group.addAction(act)
+            term_group.addAction(act)
 
     def apply_code_theme(self, name: str):
-        """Session code theme → repaint Qt FilePanes, persist to layout."""
-        if self.bridge.core.theme() == name:
+        """Session code theme → repaint Qt FilePanes + MarkdownPanes.
+
+        One apply covers both: fences always use the code theme, so the
+        two can never diverge from this surface. Both keys persist equal
+        (the TUI reads them separately) into the layout file.
+        """
+        if self.bridge.core.theme() == name and self.bridge.core.markdown_theme() == name:
             return
         self.bridge.core.set_theme(name)
+        self.bridge.core.set_markdown_theme(name)
         for pane in self.file_panes.values():
+            pane.refresh()
+        # No deferral (unlike the Lace path below): the app palette does
+        # not change here, so sampling it now reads current colors.
+        for pane in self.md_panes.values():
             pane.refresh()
         self.save_themes()
         self._sync_theme_checks()
 
-    def apply_markdown_theme(self, name: str):
-        """Fence theme → re-render Qt MarkdownPanes, persist to layout."""
-        if self.bridge.core.markdown_theme() == name:
+    def apply_terminal_theme(self, name: str):
+        """Terminal theme → recolor Qt terminal panes, persist to layout."""
+        if self.terminal_theme == name:
             return
-        self.bridge.core.set_markdown_theme(name)
-        for pane in self.md_panes.values():
-            pane.refresh()
+        self.terminal_theme = name
+        for pane in self.term_panes.values():
+            pane.set_terminal_theme(name)
         self.save_themes()
         self._sync_theme_checks()
 
@@ -683,8 +697,8 @@ class KilimWindow(FramelessLaceMainWindow):
         """Dock chrome theme, effective immediately.
 
         Kilim chrome (`kilim_*`) is unified: selecting it also sets the
-        same-named code + markdown themes and repaints (one click, all
-        surfaces) — neo chrome selects the neo code/md themes.
+        same-named code + markdown + terminal themes and repaints (one
+        click, all surfaces) — neo chrome selects the neo themes.
         """
         from lace import apply_dock_theme
 
@@ -694,8 +708,11 @@ class KilimWindow(FramelessLaceMainWindow):
                 syntect = self._kilim_by_lace[key]
                 self.bridge.core.set_theme(syntect)
                 self.bridge.core.set_markdown_theme(syntect)
+                self.terminal_theme = syntect
                 for pane in self.file_panes.values():
                     pane.refresh()
+                for pane in self.term_panes.values():
+                    pane.set_terminal_theme(syntect)
                 # Markdown refresh is deferred: the theme bridge pushes the
                 # app palette via singleShot(0), so a direct refresh here
                 # would sample the previous theme's colors — scrollbar CSS
@@ -718,7 +735,7 @@ class KilimWindow(FramelessLaceMainWindow):
         want = {
             "lace": self.lace_theme,
             "code": self.bridge.core.theme(),
-            "md": self.bridge.core.markdown_theme(),
+            "terminal": self.terminal_theme,
         }
         for group, current in want.items():
             for name, act in self._theme_actions.get(group, {}).items():
@@ -728,13 +745,14 @@ class KilimWindow(FramelessLaceMainWindow):
                     pass
 
     def save_themes(self):
-        """Write code/markdown theme choices back into the layout file."""
+        """Write code/markdown/terminal choices back into the layout file."""
         import json as _json
 
         try:
             raw = _json.loads(Path(self.layout_path).read_text(encoding="utf-8"))
             raw.setdefault("layout", {})["theme"] = self.bridge.core.theme()
             raw["layout"]["markdown_theme"] = self.bridge.core.markdown_theme()
+            raw["layout"]["terminal_theme"] = self.terminal_theme
             Path(self.layout_path).write_text(_json.dumps(raw, indent=2), encoding="utf-8")
         except (OSError, ValueError):
             pass
@@ -784,7 +802,7 @@ class KilimWindow(FramelessLaceMainWindow):
         self.bridge.call(
             lambda: self.bridge.core.spawn_term(pid, name, cmd, args, 24, 80, 5000)
         )
-        inner = TerminalPane(self.bridge, pid)
+        inner = TerminalPane(self.bridge, pid, self.terminal_theme)
         dock = DockWidget(name)
         dock.setObjectName(pid)
         dock.set_widget(inner)

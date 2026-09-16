@@ -132,6 +132,9 @@ impl App {
 
     /// Cycle the code theme (TUI file panes + Qt FilePane share it) and
     /// persist the choice to the layout file when one is known.
+    ///
+    /// Markdown follows the code theme: one cycle, no divergence — the
+    /// same single-apply rule the Qt menus enforce.
     fn cycle_theme(&mut self, dir: i32) {
         let names = kilim_core::Session::list_themes();
         if names.is_empty() {
@@ -145,7 +148,9 @@ impl App {
         // Infallible by construction: the name comes from the live list in
         // this single-threaded loop (registry only grows). Old theme stays
         // on the theoretical race — visible, never silently wrong.
-        let _ = self.session.set_theme(&names[next].clone());
+        let next_name = names[next].clone();
+        let _ = self.session.set_theme(&next_name);
+        let _ = self.session.set_markdown_theme(&next_name);
         if let Some(path) = self.layout_path.clone() {
             let _ = std::fs::write(path, self.session.to_doc_json());
         }
@@ -390,5 +395,16 @@ mod tests {
         assert_eq!(key_action(&key(KeyCode::PageUp, none)), Action::Scroll(10));
         assert_eq!(key_action(&key(KeyCode::PageDown, none)), Action::Scroll(-10));
         assert_eq!(key_action(&key(KeyCode::F(1), none)), Action::Ignore);
+    }
+
+    #[test]
+    fn ctrl_t_cycle_unifies_code_and_markdown_themes() {
+        // A split doc converges on one theme after a single cycle: the
+        // TUI applies the same single-apply rule the Qt menus enforce.
+        let doc = r#"{"layout": {"root": {"type": "pane", "pane_id": "t"}, "active": "t", "theme": "Kilim Midnight", "markdown_theme": "Kilim Dark"}, "panes": [{"id": "t", "title": "t", "kind": "term"}]}"#;
+        let mut app = App::new(doc).unwrap();
+        app.cycle_theme(1);
+        assert_eq!(app.session.theme(), app.session.markdown_theme());
+        assert_ne!(app.session.theme(), "Kilim Midnight");
     }
 }

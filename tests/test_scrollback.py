@@ -300,7 +300,7 @@ def test_terminal_menu_launches_shell():
 
 
 def test_themes_menu_switches_and_repaints(tmp_path):
-    """Themes menu: code/md/lace actions apply, repaint, and persist."""
+    """Themes menu: code/terminal/lace actions apply, repaint, persist."""
     import json
 
     from _util import copy_layout
@@ -314,29 +314,36 @@ def test_themes_menu_switches_and_repaints(tmp_path):
         menus = {a.text(): a.menu() for a in w.titleBar.menu_bar.actions()}
         assert "&Themes" in menus, sorted(menus)
         subs = {a.text(): a.menu() for a in menus["&Themes"].actions() if a.menu()}
-        assert "Code" in subs and "Markdown" in subs and "Lace" in subs, sorted(subs)
-        md_actions = {a.text(): a for a in subs["Markdown"].actions() if not a.isSeparator()}
+        assert "Code" in subs and "Terminal" in subs and "Lace" in subs, sorted(subs)
+        assert "Markdown" not in subs, "fences follow the code apply now"
+        term_actions = {a.text(): a for a in subs["Terminal"].actions() if not a.isSeparator()}
         code_actions = {
             a.text(): a
             for a in subs["Code"].actions()
-            if a.text() in md_actions
+            if a.text() in term_actions
         }
-        # One shared ten: code + markdown lists match, no Pin menu, and no
+        # One shared ten: code + terminal lists match, no Pin menu, and no
         # extra toggles in the theme submenus.
-        assert sorted(code_actions) == sorted(md_actions), "code/md lists diverged"
+        assert sorted(code_actions) == sorted(term_actions), "code/terminal lists diverged"
         assert len(code_actions) == 10
         assert all(
-            a.isSeparator() or a.text() in md_actions
+            a.isSeparator() or a.text() in term_actions
             for a in subs["Code"].actions()
         ), "unexpected extra in the Code submenu"
         assert "&Pin" not in menus
+        # One code apply covers Markdown too: both keys set + persisted equal.
         code_actions["Kilim Warm"].trigger()
         assert w.bridge.core.theme() == "Kilim Warm"
-        md_actions["Kilim Midnight Neo"].trigger()
-        assert w.bridge.core.markdown_theme() == "Kilim Midnight Neo"
+        assert w.bridge.core.markdown_theme() == "Kilim Warm"
         raw = json.loads(layout_file.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Warm"
-        assert raw["layout"]["markdown_theme"] == "Kilim Midnight Neo"
+        assert raw["layout"]["markdown_theme"] == "Kilim Warm"
+        # Terminal applies on its own track: layout key only, code untouched.
+        term_actions["Kilim Midnight Neo"].trigger()
+        assert w.terminal_theme == "Kilim Midnight Neo"
+        assert w.bridge.core.theme() == "Kilim Warm"
+        raw = json.loads(layout_file.read_text(encoding="utf-8"))
+        assert raw["layout"]["terminal_theme"] == "Kilim Midnight Neo"
         # Lace menu is Kilim-only and flat: 10 actions, no stock presets.
         lace_acts = [a for a in subs["Lace"].actions() if a.menu() is None]
         assert [a.text() for a in lace_acts] == ["Kilim Midnight", "Kilim Midnight Neo",
@@ -345,6 +352,86 @@ def test_themes_menu_switches_and_repaints(tmp_path):
             "Kilim Warm", "Kilim Warm Neo"]
         next(a for a in lace_acts if a.text() == "Kilim Light").trigger()
         assert w.lace_theme == "kilim_light", "lace choice not recorded"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_code_apply_repaints_file_and_markdown_panes(tmp_path):
+    """One code apply repaints FilePanes and MarkdownPanes together."""
+    from unittest.mock import patch
+
+    from kilim.qt_app import FilePane, MarkdownPane
+
+    app, w = _window("layouts/example.json")
+    try:
+        src = tmp_path / "sample.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        w.open_in_viewer(str(src), 1, "code")
+        app.processEvents()
+        assert w.file_panes and w.md_panes
+        with (
+            patch.object(FilePane, "refresh", autospec=True) as fr,
+            patch.object(MarkdownPane, "refresh", autospec=True) as mr,
+        ):
+            w.apply_code_theme("Kilim Light")
+        assert w.bridge.core.theme() == "Kilim Light"
+        assert w.bridge.core.markdown_theme() == "Kilim Light"
+        assert fr.call_count == len(w.file_panes) >= 1
+        assert mr.call_count == len(w.md_panes) >= 1
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_terminal_apply_recolors_only_terms(tmp_path):
+    """Terminal apply reaches term panes; file/md panes stay quiet."""
+    from unittest.mock import patch
+
+    from kilim.qt_app import FilePane, MarkdownPane
+
+    app, w = _window("layouts/example.json")
+    try:
+        src = tmp_path / "sample.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        w.open_in_viewer(str(src), 1, "code")
+        app.processEvents()
+        assert w.term_panes and w.file_panes and w.md_panes
+        with (
+            patch.object(FilePane, "refresh", autospec=True) as fr,
+            patch.object(MarkdownPane, "refresh", autospec=True) as mr,
+        ):
+            w.apply_terminal_theme("Kilim Warm")
+        assert w.terminal_theme == "Kilim Warm"
+        assert all(p._terminal_theme == "Kilim Warm" for p in w.term_panes.values())
+        assert fr.call_count == 0
+        assert mr.call_count == 0
+        assert w.bridge.core.theme() != "Kilim Warm", "code track untouched"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_fresh_launch_unifies_terminal_theme(tmp_path):
+    """Fresh launch (no sidecar) opens unified: a stored terminal_theme
+    yields to the Midnight default — the same reunification rule the code
+    track has always had (restart restores the Lace selection)."""
+    import json
+
+    from _util import copy_layout
+
+    layout_file = tmp_path / "l.json"
+    copy_layout("layouts/default.json", layout_file)
+    raw = json.loads(layout_file.read_text(encoding="utf-8"))
+    raw["layout"]["terminal_theme"] = "Kilim Warm"
+    layout_file.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    app, w = _window(str(layout_file))
+    try:
+        assert w.lace_theme == "kilim_midnight"
+        assert w.terminal_theme == "Kilim Midnight"
+        assert all(
+            p._terminal_theme == "Kilim Midnight" for p in w.term_panes.values()
+        )
     finally:
         w.close()
         app.processEvents()
@@ -386,16 +473,20 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
         assert w.lace_theme == "kilim_midnight"
         assert w.bridge.core.theme() == "Kilim Midnight"
         assert w.bridge.core.markdown_theme() == "Kilim Midnight"
+        assert w.terminal_theme == "Kilim Midnight"
         w.apply_lace_theme("kilim_light")
         assert w.bridge.core.theme() == "Kilim Light"
         assert w.bridge.core.markdown_theme() == "Kilim Light"
-        # Neo chassis: chrome changes, code/md follow into the neo theme.
+        assert w.terminal_theme == "Kilim Light"
+        # Neo chassis: chrome changes, code/md/terminal follow into neo.
         w.apply_lace_theme("kilim_light_neo")
         assert w.lace_theme == "kilim_light_neo"
         assert w.bridge.core.theme() == "Kilim Light Neo"
         assert w.bridge.core.markdown_theme() == "Kilim Light Neo"
+        assert w.terminal_theme == "Kilim Light Neo"
         raw = json.loads(layout.read_text(encoding="utf-8"))
         assert raw["layout"]["theme"] == "Kilim Light Neo"
+        assert raw["layout"]["terminal_theme"] == "Kilim Light Neo"
         assert json.loads(sidecar.read_text(encoding="utf-8"))["lace_theme"] == "kilim_light_neo"
     finally:
         w.close()
@@ -545,8 +636,8 @@ def test_resize_retry_on_failure():
         app.processEvents()
 
 
-def test_term_pane_follows_code_theme():
-    """Shell view tracks the code theme (palette + repaint marker)."""
+def test_term_pane_follows_terminal_theme():
+    """Shell view tracks the terminal theme (palette + repaint marker)."""
     from PySide6.QtGui import QColor, QPalette
 
     from kilim import theme_background, theme_foreground
@@ -556,11 +647,15 @@ def test_term_pane_follows_code_theme():
         assert theme_foreground("Kilim Midnight") != ""
         pane = w.term_panes["term1"]
         pane._ensure_theme()
-        assert pane._theme_name == w.bridge.core.theme()
+        assert pane._theme_name == w.terminal_theme
         assert pane.view.palette().color(QPalette.Base) == QColor(
-            theme_background(w.bridge.core.theme()))
+            theme_background(w.terminal_theme))
+        # A code apply leaves terminals alone...
         w.apply_code_theme("Kilim Light")
         pane._ensure_theme()  # idempotent: syncs now if no poll beat us
+        assert pane._theme_name == "Kilim Midnight"
+        # ...a terminal apply recolors them.
+        w.apply_terminal_theme("Kilim Light")
         assert pane._theme_name == "Kilim Light"
         assert pane.view.palette().color(QPalette.Base) == QColor("#ffffff")
     finally:

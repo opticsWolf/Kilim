@@ -119,10 +119,12 @@ class TerminalPane(QWidget):
     snaps back to follow mode.
     """
 
-    def __init__(self, bridge: Bridge, pane_id: str):
+    def __init__(self, bridge: Bridge, pane_id: str, theme: str | None = None):
         super().__init__()
         self.bridge = bridge
         self.pane_id = pane_id
+        # Explicit terminal theme (Themes menu); None follows the code theme.
+        self._terminal_theme = theme
         self.view = _TermView(self)
         self.bar = QScrollBar(Qt.Vertical)
         lay = QHBoxLayout(self)
@@ -221,9 +223,15 @@ class TerminalPane(QWidget):
         rows = max(5, self.view.viewport().height() // max(1, fm.lineSpacing()))
         return (min(400, rows), min(800, cols))
 
-    def _ensure_theme(self):
-        """Track the session code theme into the widget palette.
+    def set_terminal_theme(self, name: str | None) -> None:
+        """Explicit terminal theme (Themes menu); None follows code theme."""
+        self._terminal_theme = name
+        self._ensure_theme()
 
+    def _ensure_theme(self):
+        """Track the terminal theme into the widget palette.
+
+        An explicit choice wins; unset panes follow the session code theme.
         Default-fg/bg cells resolve through the palette, so theming it
         recolors the whole shell view (background included) and clearing
         the paint signature forces a rebuild on switch. Explicit shell
@@ -232,7 +240,7 @@ class TerminalPane(QWidget):
 
         from kilim import theme_background, theme_foreground
 
-        name = self.bridge.core.theme()
+        name = self._terminal_theme or self.bridge.core.theme()
         if name == self._theme_name:
             return
         self._theme_name = name
