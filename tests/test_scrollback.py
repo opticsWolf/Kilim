@@ -15,10 +15,9 @@ def _window(layout="layouts/default.json"):
     import tempfile
     from pathlib import Path as _Path
 
-    from PySide6.QtWidgets import QApplication
-
     from _util import copy_layout
     from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     sidecar = None
@@ -168,7 +167,6 @@ def test_position_survives_repaints():
 
 def test_right_click_paste_reaches_shell():
     """Clipboard text pasted via pane lands in the shell's line buffer."""
-    import asyncio
 
     from PySide6.QtWidgets import QApplication
 
@@ -236,9 +234,8 @@ def test_wheel_scrolls_three_lines_and_repaints():
 
 def test_markdown_renders_pure_rust():
     """README pane via core.markdown_page — no wheel involved."""
-    from PySide6.QtWidgets import QApplication
-
     from kilim.qt_app import Bridge, MarkdownPane
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     doc = open("layouts/example.json", encoding="utf-8").read()
@@ -260,9 +257,8 @@ def test_active_term_autofocused(tmp_path):
     Hermetic layout pair: the repo sidecar is live session state, and a
     saved arrangement can leave the active pane as a background tab."""
     from _util import copy_layout
-    from PySide6.QtWidgets import QApplication
-
     from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     layout = tmp_path / "default.json"
@@ -395,7 +391,6 @@ def test_themes_menu_switches_and_repaints(tmp_path):
     import json
 
     from _util import copy_layout
-    from PySide6.QtWidgets import QApplication
 
     # Hermetic copy: parallel workers must not race on the repo's layout.
     layout_file = tmp_path / "l.json"
@@ -533,8 +528,6 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     import json
 
     from _util import copy_layout
-    from PySide6.QtWidgets import QApplication
-
     from kilim.qt_app import KilimWindow, register_kilim_lace_themes
     from lace.dock_style_manager import theme_groups
 
@@ -556,7 +549,7 @@ def test_kilim_group_unified_apply_and_fresh_default(tmp_path):
     layout = tmp_path / "fresh.json"
     copy_layout("layouts/default.json", layout)
     sidecar = tmp_path / "fresh.perspective.json"
-    app, _ = _window()  # noqa: F841 — ensures QApplication exists
+    app, _ = _window()
     w = KilimWindow(str(layout), str(sidecar))
     try:
         w.show()
@@ -592,10 +585,9 @@ def test_reset_layout_restores_the_file_arrangement(tmp_path):
     import json
 
     from _util import copy_layout
-    from PySide6.QtWidgets import QApplication
-
     from kilim import perspective as perspectives
     from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     layout = tmp_path / "default.json"
@@ -648,11 +640,10 @@ def test_file_pane_no_phantom_lines_and_full_bleed_bg(tmp_path):
     """Code view: one block per line (no doubled breaks), theme bg edge to edge."""
     import json
 
-    from PySide6.QtGui import QColor, QPalette
-    from PySide6.QtWidgets import QApplication
-
     from kilim import theme_background
     from kilim.qt_app import Bridge, FilePane
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     src = tmp_path / "s.py"
@@ -918,10 +909,9 @@ def test_terminal_theme_apply_repaints_idle_rows():
     import time
     from unittest.mock import patch
 
-    from PySide6.QtGui import QColor, QPalette
-
     from kilim import theme_background
     from kilim.qt_app import TerminalPane
+    from PySide6.QtGui import QColor, QPalette
 
     app, w = _window()
     try:
@@ -949,9 +939,8 @@ def test_terminal_theme_apply_repaints_idle_rows():
 
 def test_term_pane_follows_terminal_theme():
     """Shell view tracks the terminal theme (palette + repaint marker)."""
-    from PySide6.QtGui import QColor, QPalette
-
     from kilim import theme_background, theme_foreground
+    from PySide6.QtGui import QColor, QPalette
 
     app, w = _window()  # import runs here; registry starts empty
     try:
@@ -1079,8 +1068,6 @@ def test_hidden_hardware_cursor_suppresses_the_soft_block():
 
 
 def test_arrow_and_mouse_encodings():
-    from PySide6.QtCore import Qt
-
     from kilim.qt_app import (
         _arrow_seq,
         _char_to_term_col,
@@ -1088,6 +1075,7 @@ def test_arrow_and_mouse_encodings():
         _term_col_to_char,
         _x10_mouse,
     )
+    from PySide6.QtCore import Qt
 
     assert _arrow_seq(Qt.Key_Up, False) == b"\x1b[A"
     assert _arrow_seq(Qt.Key_Up, True) == b"\x1bOA"
@@ -1189,7 +1177,6 @@ def test_terminal_cursor_is_a_blinking_block():
 
 def test_incremental_repaint_touches_one_row():
     """Dirty-region paint: one changed row = one more frame, rest intact."""
-    from PySide6.QtGui import QTextCursor
 
     app, w = _window()
     try:
@@ -1416,11 +1403,10 @@ def test_floats_use_custom_chrome():
     Floats run under ``TitleBarMode.custom`` with the plain Lace title
     bar configured on the manager; the Kilim menus stay on the main
     window's chrome only."""
-    from PySide6.QtCore import Qt
-
     from lace import TitleBarMode
     from lace.floating_dock_container_frameless import FramelessFloatingDockContainer
     from lace.frameless_window import LaceStandardTitleBar
+    from PySide6.QtCore import Qt
 
     app, w = _window()
     try:
@@ -1586,9 +1572,8 @@ def _custom_window(tmp_path, panes, shell_cwds):
     import json
     from pathlib import Path as _Path
 
-    from PySide6.QtWidgets import QApplication
-
     from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
 
     base = json.loads(_Path("layouts/default.json").read_text(encoding="utf-8"))
     base["panes"] = panes
@@ -1637,6 +1622,120 @@ def _wait_printed_cwd(app, term, pid="term1", timeout=30.0):
     raise AssertionError("probe never printed its cwd")
 
 
+def test_term_cwd_tracks_cd_live(tmp_path):
+    """Snapshot cwd follows a real shell's cd (OSC tracking)."""
+    import os
+    import shutil
+    import time
+
+    if shutil.which("cmd.exe") is None:
+        pytest.skip("cmd.exe required")
+    aaa = tmp_path / "aaa"
+    bbb = tmp_path / "bbb"
+    aaa.mkdir()
+    bbb.mkdir()
+    app, w = _window()
+    try:
+        w.bridge.call(lambda: w.bridge.core.spawn_term(
+            "tcd", "tcd", "cmd.exe", [], 24, 80, 5000, cwd=str(aaa)))
+        try:
+            w.bridge.submit(lambda: w.bridge.core.write_term(
+                "tcd", ("cd /d " + str(bbb).replace("/", "\\") + "\r").encode()))
+            deadline = time.time() + 25
+            live = None
+            while time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.5)
+                snap = w.bridge.call(lambda: w.bridge.core.snapshot_term("tcd", 1, None))
+                live = snap[6] if len(snap) > 6 else None
+                if live and os.path.normcase(live) == os.path.normcase(str(bbb)):
+                    break
+            assert live and os.path.normcase(live) == os.path.normcase(str(bbb)), live
+        finally:
+            try:
+                w.bridge.call(lambda: w.bridge.core.terminate_term("tcd", 1.0))
+            except Exception:  # noqa: BLE001, S110 — closing anyway
+                pass
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_pane_live_dir_survives_restart(tmp_path):
+    """cd in term1, close, reopen: the pane restores the live dir.
+
+    The full session loop: OSC tracking feeds the snapshot, closeEvent
+    persists per-pane cwds to the sidecar, the next launch stamps them."""
+    import json
+    import os
+    import time
+    from pathlib import Path as _Path
+
+    from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
+
+    def norm(p):
+        return os.path.normcase(os.path.normpath(p))
+
+    target = tmp_path / "lived"
+    target.mkdir()
+    base = json.loads(_Path("layouts/default.json").read_text(encoding="utf-8"))
+    layout_path = tmp_path / "k.json"
+    layout_path.write_text(json.dumps(base), encoding="utf-8")
+    sidecar_path = tmp_path / "k.perspective.json"
+
+    def cd_line(shell_base):
+        t = str(target)
+        if shell_base == "cmd":
+            return ("cd /d " + t.replace("/", "\\") + "\r").encode()
+        if shell_base in ("powershell", "pwsh"):
+            return ('Set-Location "' + t + '"\r').encode()
+        return ('cd "' + t.replace("\\", "/") + '"\r').encode()
+
+    app = QApplication.instance() or QApplication([])
+    w1 = KilimWindow(str(layout_path), str(sidecar_path))
+    w1.show()
+    try:
+        try:
+            default_cmd = w1.bridge.core.default_shell_cmd()[0]
+        except Exception:  # noqa: BLE001 — assume cmd syntax
+            default_cmd = ""
+        sh_base = default_cmd.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        sh_base = sh_base.removesuffix(".exe")
+        w1.bridge.submit(lambda: w1.bridge.core.write_term("term1", cd_line(sh_base or "cmd")))
+        deadline = time.time() + 25
+        live = None
+        while time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.5)
+            snap = w1.bridge.call(lambda: w1.bridge.core.snapshot_term("term1", 1, None))
+            live = snap[6] if len(snap) > 6 else None
+            if live and norm(live) == norm(str(target)):
+                break
+        assert live and norm(live) == norm(str(target)), live
+    finally:
+        w1.close()
+        app.processEvents()
+    side = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert norm(side["pane_cwds"]["term1"]) == norm(str(target))
+    w2 = KilimWindow(str(layout_path), str(sidecar_path))
+    w2.show()
+    try:
+        deadline = time.time() + 30
+        live = None
+        while time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.5)
+            snap = w2.bridge.call(lambda: w2.bridge.core.snapshot_term("term1", 1, None))
+            live = snap[6] if len(snap) > 6 else None
+            if live and norm(live) == norm(str(target)):
+                break
+        assert live and norm(live) == norm(str(target)), live
+    finally:
+        w2.close()
+        app.processEvents()
+
+
 def test_cmdless_pane_resolves_to_platform_default():
     """A layout term with no cmd maps to the core platform-default shell.
 
@@ -1647,7 +1746,7 @@ def test_cmdless_pane_resolves_to_platform_default():
 
     def _base(cmd):
         b = cmd.replace("\\", "/").rsplit("/", 1)[-1].lower()
-        return b[:-4] if b.endswith(".exe") else b
+        return b.removesuffix(".exe")
 
     app, w = _window()
     try:
@@ -1677,10 +1776,9 @@ def test_default_shaped_pane_restores_start_dir(tmp_path):
     import time
     from pathlib import Path as _Path
 
-    from PySide6.QtWidgets import QApplication
-
     from kilim import shells
     from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
 
     entries = shells.find_shells()
     assert entries, "expected at least one shell on this machine"

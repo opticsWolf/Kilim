@@ -5,15 +5,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from lace.frameless_window import FramelessLaceMainWindow
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
-from lace.frameless_window import FramelessLaceMainWindow
-
 from kilim import perspective as perspectives
+from kilim.git_pane import GitPane
 from kilim.perspective import layout_groups
 from kilim.qt_bridge import Bridge
-from kilim.git_pane import GitPane
 from kilim.qt_themes import register_kilim_lace_themes
 from kilim.qt_util import _elide_path, _same_path
 from kilim.terminal_pane import TerminalPane
@@ -25,8 +24,7 @@ class KilimWindow(FramelessLaceMainWindow):
     def __init__(self, layout_path: str, perspective_path: str | None = None):
         # Frameless chrome with the menus embedded in the title bar.
         super().__init__(title_bar=KilimTitleBar)
-        from lace import DockManager, DockWidget
-        from lace import DockWidgetArea
+        from lace import DockManager, DockWidget, DockWidgetArea
 
         # If setup fails half-way (no window, but PTYs + loop thread alive),
         # don't orphan a runaway: stop the bridge before propagating.
@@ -53,14 +51,22 @@ class KilimWindow(FramelessLaceMainWindow):
         try:
             _side = _json.loads(Path(self.perspective_path).read_text(encoding="utf-8"))
             _cwds = _side.get("shell_cwds") if isinstance(_side, dict) else None
+            _panes = _side.get("pane_cwds") if isinstance(_side, dict) else None
         except (OSError, ValueError):
             _side = None
             _cwds = None
+            _panes = None
         # Machine-local paths: sidecar, never the shared layout. Values
         # are {mode, dir} specs (plain strings = v0.4.12 customs).
         self.shell_cwds = (
             {str(k): v for k, v in _cwds.items() if isinstance(v, (dict, str))}
             if isinstance(_cwds, dict)
+            else {}
+        )
+        # Live per-pane dirs, saved at close for session restore.
+        self.pane_cwds = (
+            {str(k): str(v) for k, v in _panes.items() if isinstance(v, str) and v}
+            if isinstance(_panes, dict)
             else {}
         )
         raw = _json.loads(doc)
@@ -108,7 +114,6 @@ class KilimWindow(FramelessLaceMainWindow):
         self._viewer_seq = 0  # unique ids for click-opened viewer docks
         self._viewer_area = None  # viewer tab group's DockAreaWidget
 
-        import json
 
         InitialActive = raw["layout"].get("active", "")
         self._active = InitialActive
@@ -349,22 +354,22 @@ class KilimWindow(FramelessLaceMainWindow):
                 return None
         return None
 
-    def _follow_terminal_focus(self, widget) -> None:
+    def _follow_terminal_focus(self, old, widget) -> None:
         """Git dock follows the focused terminal's repo (viewers keep last).
 
-        Only when the dock is open and the focus lands in a *terminal* in
-        a different repo — same-repo refocus and viewer/git focus never
-        re-point (and never pay a snapshot). Snapshot failures (dead
-        shell, closing) keep the current repo."""
+        Only on genuine pane changes: initial focus (old None) and
+        same-pane moves never re-point (and never pay a snapshot).
+        Same-repo refocus and viewer/git focus never re-point either.
+        Snapshot failures (dead shell, closing) keep the current repo."""
         import os
 
         from kilim.git_pane import repo_root
 
         pane = self.git_pane
-        if pane is None:
+        if pane is None or old is None:
             return
         pid = self._term_pid_of(widget)
-        if pid is None:
+        if pid is None or pid == self._term_pid_of(old):
             return
         try:
             snap = self.bridge.call(lambda: self.bridge.core.snapshot_term(pid, 1, None))
@@ -402,13 +407,13 @@ class KilimWindow(FramelessLaceMainWindow):
         except RuntimeError:
             pass  # closing: panes half-deleted
 
-    def _on_focus_changed(self, _old, new):
+    def _on_focus_changed(self, old, new):
         if new is None:
             return
         self._refresh_status_pane()  # status bar tracks the focused pane
         try:
             if self._inside_panes(new):
-                self._follow_terminal_focus(new)
+                self._follow_terminal_focus(old, new)
                 return
         except RuntimeError:
             return
@@ -519,17 +524,23 @@ class KilimWindow(FramelessLaceMainWindow):
             none.setEnabled(False)
 
     def _stamp_layout_cwds(self, panes: dict) -> None:
-        """Stamp sidecar start dirs onto layout term panes (pre-spawn).
+        """Stamp start dirs onto layout term panes (pre-spawn).
 
-        ensure_terms spawns each layout term with its spec cwd — stamping
-        the resolved per-shell dir first is what makes a custom Start
-        Directory survive an app restart. Panes whose shell has no
-        custom/home choice keep the layout cwd (usually inherit). A
-        custom dir that no longer exists falls back to App default
-        (inherit), never a broken start dir."""
+        A saved live dir wins (exact session restore); otherwise the
+        resolved per-shell dir; otherwise the layout cwd (inherit).
+        Missing dirs fall through the chain, never a broken start."""
+        from pathlib import Path
+
         for pid, p in panes.items():
             if not isinstance(p, dict) or p.get("kind") != "term":
                 continue
+            saved = self.pane_cwds.get(pid)
+            if saved and Path(saved).is_dir():
+                try:
+                    self.bridge.core.set_pane_cwd(pid, saved)
+                    continue
+                except Exception:  # noqa: BLE001 - fall through to shell
+                    pass
             label = self._resolve_shell_label(p)
             if label is None:
                 continue
@@ -558,7 +569,7 @@ class KilimWindow(FramelessLaceMainWindow):
 
         def _base(cmd: str) -> str:
             base = cmd.replace("\\", "/").rsplit("/", 1)[-1].lower()
-            return base[:-4] if base.endswith(".exe") else base
+            return base.removesuffix(".exe")
 
         want = _base(str(pane.get("cmd") or ""))
         if not want:
@@ -638,10 +649,11 @@ class KilimWindow(FramelessLaceMainWindow):
 
     def reset_shell_cwds(self) -> None:
         """Forget every custom start directory (back to App default)."""
-        if not self.shell_cwds:
+        if not self.shell_cwds and not self.pane_cwds:
             return
         self.shell_cwds = {}
-        self._save_sidecar(shell_cwds=self.shell_cwds)
+        self.pane_cwds = {}
+        self._save_sidecar(shell_cwds=self.shell_cwds, pane_cwds=self.pane_cwds)
         self._build_terminal_menu()
 
     def set_default_shell(self, label: str) -> None:
@@ -743,8 +755,7 @@ class KilimWindow(FramelessLaceMainWindow):
 
     def _add_viewer(self, path: str, kind: str, line: int | None = None):
         """Create the session pane + dock for one viewer file."""
-        from lace import DockWidget
-        from lace import DockWidgetArea
+        from lace import DockWidget, DockWidgetArea
 
         self._viewer_seq += 1
         pid = f"view{self._viewer_seq}"
@@ -863,8 +874,7 @@ class KilimWindow(FramelessLaceMainWindow):
         The pane is Python-only — no session pane, so no core calls — and
         `repo=None` means the active terminal's repo (else the app dir,
         else an empty state with an Open button)."""
-        from lace import DockWidget
-        from lace import DockWidgetArea
+        from lace import DockWidget, DockWidgetArea
 
         if self.git_pane is not None:
             dock = self.pane_docks.get("git")
@@ -1144,8 +1154,7 @@ class KilimWindow(FramelessLaceMainWindow):
         App default, Shell default, or a picked dir) — the core falls
         back to inherit for missing dirs too, never an error.
         """
-        from lace import DockWidget
-        from lace import DockWidgetArea
+        from lace import DockWidget, DockWidgetArea
 
         self._term_seq += 1
         pid = f"term-new{self._term_seq}"
@@ -1238,6 +1247,24 @@ class KilimWindow(FramelessLaceMainWindow):
             w = w.parentWidget()
         return self._active
 
+    def _collect_pane_cwds(self) -> dict:
+        """Live term dirs for session restore (dead shells skipped)."""
+        cwds = {}
+        try:
+            ids = list(self.term_panes)
+        except RuntimeError:
+            return {}
+        for pid in ids:
+            try:
+                snap = self.bridge.call(
+                    lambda pid=pid: self.bridge.core.snapshot_term(pid, 1, None))
+            except Exception:  # noqa: BLE001 - dead shell keeps nothing
+                continue
+            cwd = snap[6] if len(snap) > 6 else None
+            if cwd:
+                cwds[pid] = cwd
+        return cwds
+
     def closeEvent(self, e):
         try:
             QApplication.instance().focusChanged.disconnect(self._on_focus_changed)
@@ -1246,6 +1273,12 @@ class KilimWindow(FramelessLaceMainWindow):
         try:
             self._persist_perspective()
         except Exception:  # noqa: BLE001 — sidecar must never block shutdown
+            pass
+        # After _persist_perspective: perspectives.save() rewrites the
+        # sidecar, so stash live dirs last or they are dropped.
+        try:
+            self._save_sidecar(pane_cwds=self._collect_pane_cwds())
+        except Exception:  # noqa: BLE001 - sidecar must never block shutdown
             pass
         for pid in self.bridge.core.pane_ids():
             try:

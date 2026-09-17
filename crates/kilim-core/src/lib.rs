@@ -6,6 +6,7 @@
 //! - `kilim-py` exposes it to Lace as dock areas + perspectives
 
 pub mod highlight;
+pub mod cwdtrack;
 pub mod kilim_themes;
 pub mod layout;
 pub mod paths;

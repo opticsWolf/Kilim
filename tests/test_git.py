@@ -220,9 +220,19 @@ pytest.importorskip("lace")
 @pytest.fixture()
 def scene(tmp_path):
     """Hermetic (layout, sidecar) pair: tests never write the repo files."""
+    import json
+
     from _util import copy_layout
 
     layout = copy_layout("layouts/default.json", tmp_path / "l.json")
+    # Neutralize term spawns: they inherit the pytest cwd (the Kilim
+    # repo), which would let focus-follow yank the dock off the fixture
+    # repo. tmp_path is never a repo, so follow keeps the current one.
+    doc = json.loads(layout.read_text(encoding="utf-8"))
+    for p in doc.get("panes", []):
+        if p.get("kind") == "term":
+            p["cwd"] = str(tmp_path)
+    layout.write_text(json.dumps(doc), encoding="utf-8")
     return str(layout), str(tmp_path / "l.perspective.json")
 
 
@@ -395,16 +405,16 @@ def test_git_focus_follows_terminal_repo(scene, repo, tmp_path):
         try:
             deadline = time.time() + 10
             while norm(w.git_pane.repo or "") != norm(str(root2)):
-                w._on_focus_changed(None, pane2.view)
+                w._on_focus_changed(w.git_pane.graph, pane2.view)
                 app.processEvents()
                 if time.time() > deadline:
                     break
             assert norm(w.git_pane.repo) == norm(str(root2))
             # Viewer (and git) focus keeps the last terminal's repo.
-            w._on_focus_changed(None, w.git_pane.graph)
+            w._on_focus_changed(pane2.view, w.git_pane.graph)
             assert norm(w.git_pane.repo) == norm(str(root2))
             # Same-repo refocus is a no-op too.
-            w._on_focus_changed(None, pane2.view)
+            w._on_focus_changed(w.git_pane.graph, pane2.view)
             assert norm(w.git_pane.repo) == norm(str(root2))
         finally:
             w.term_panes.pop("t2", None)
@@ -615,6 +625,56 @@ def test_diff_highlights_code_spans(scene, repo):
             count += 1
             it += 1
         assert count >= 3, "marker + at least two code spans"
+    finally:
+        w.close()
+        app.processEvents()
+
+
+def test_git_focus_follows_live_cd(scene, repo, tmp_path):
+    """Focus follows the shell's live dir, not its spawn dir."""
+    import os
+    import shutil
+    import time
+
+    from kilim.terminal_pane import TerminalPane
+
+    if shutil.which("cmd.exe") is None:
+        pytest.skip("cmd.exe required")
+
+    def norm(p):
+        return os.path.normcase(p)
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        assert norm(w.git_pane.repo) == norm(repo)
+        root2 = tmp_path / "repo2"
+        root2.mkdir()
+        _git(root2, "init")
+        w.bridge.call(lambda: w.bridge.core.spawn_term(
+            "t3", "t3", "cmd.exe", [], 24, 80, 5000, cwd=str(repo)))
+        pane3 = TerminalPane(w.bridge, "t3", w.terminal_theme)
+        w.term_panes["t3"] = pane3
+        try:
+            w.bridge.submit(lambda: w.bridge.core.write_term(
+                "t3", ("cd /d " + str(root2).replace("/", "\\") + "\r").encode()))
+            deadline = time.time() + 30
+            while norm(w.git_pane.repo or "") != norm(str(root2)):
+                w._on_focus_changed(w.git_pane.graph, pane3.view)
+                app.processEvents()
+                time.sleep(0.5)
+                if time.time() > deadline:
+                    break
+            assert norm(w.git_pane.repo) == norm(str(root2))
+        finally:
+            w.term_panes.pop("t3", None)
+            try:
+                w.bridge.call(lambda: w.bridge.core.terminate_term("t3", 1.0))
+            except Exception:  # noqa: BLE001, S110 — closing anyway
+                pass
+            pane3.setParent(None)
+            pane3.deleteLater()
     finally:
         w.close()
         app.processEvents()

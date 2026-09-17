@@ -34,7 +34,12 @@ impl TermHandle {
         } else {
             (cmd.to_string(), args.to_vec())
         };
-        let env: Vec<(String, String)> = std::env::vars().collect();
+        // Live-cwd reporting (OSC 7 / 9;9): stock shells stay silent,
+        // so seed the invisible integration here — the single spawn
+        // choke point both frontends share. Explicit user config wins.
+        let args = crate::cwdtrack::track_args(&cmd, args);
+        let mut env: Vec<(String, String)> = std::env::vars().collect();
+        crate::cwdtrack::track_env(&cmd, &mut env);
         let ws = stitch_pty::winsize::Winsize {
             rows,
             cols,
@@ -174,7 +179,9 @@ impl TermHandle {
             .into_iter()
             .map(|r| base.saturating_add(r))
             .collect();
-        let cwd = screen.cwd().map(str::to_string);
+        // OSC 9;9 reports backslash paths; normalize once so links,
+        // stamps, and repo resolution never fight separators.
+        let cwd = screen.cwd().map(|c| c.replace('\\', "/"));
         (total, start, cells, cursor, modes, dirty, cwd)
     }
 
