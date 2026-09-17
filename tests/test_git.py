@@ -488,6 +488,52 @@ def test_git_colors_follow_theme(scene, repo):
         app.processEvents()
 
 
+def test_git_inks_contrast_all_themes(scene):
+    """Every dock ink passes contrast on every theme's paper.
+
+    Status letters + body text hit WCAG AA (4.5); graphical inks
+    (lanes, pills, dim, link) hit 3.0. Guards future themes too."""
+    from kilim import list_themes, theme_background
+    from PySide6.QtGui import QColor
+
+    def lin(c):
+        c /= 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    def luminance(q):
+        return 0.2126 * lin(q.red()) + 0.7152 * lin(q.green()) + 0.0722 * lin(q.blue())
+
+    def ratio(a, b):
+        l1, l2 = luminance(a), luminance(b)
+        if l1 < l2:
+            l1, l2 = l2, l1
+        return (l1 + 0.05) / (l2 + 0.05)
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=None)  # inks need no repo, zero git I/O
+        pane = w.git_pane
+        names = list_themes()
+        assert len(names) >= 2
+        for name in names:
+            w.apply_code_theme(name)
+            app.processEvents()
+            paper = QColor(theme_background(name))
+            text_inks = {f"status-{k}": v for k, v in pane._status.items()}
+            text_inks["text"] = pane._ink
+            for label, ink in text_inks.items():
+                assert ratio(ink, paper) >= 4.5, f"{name} {label} {ink.name()}"
+            gfx_inks = {"dim": pane._dim, "link": pane._link}
+            gfx_inks.update({f"pill-{k}": v for k, v in pane.graph._pills.items()})
+            gfx_inks.update({f"lane-{j}": c for j, c in enumerate(pane.graph._colors)})
+            for label, ink in gfx_inks.items():
+                assert ratio(ink, paper) >= 3.0, f"{name} {label} {ink.name()}"
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_graph_paints_antialiased(monkeypatch):
     """The graph paint path enables AA for curves, dots, and text."""
     import kilim.git_pane as gp

@@ -250,12 +250,12 @@ _STATUS_DARK = {  # name-status letter -> ink on dark paper
     "M": "#e3b341", "A": "#56d364", "D": "#ff7b72", "R": "#39c5cf",
     "C": "#db61a2", "T": "#9aa4b2", "U": "#ffa657",
 }
-_STATUS_LIGHT = {  # same semantics on light paper
-    "M": "#9a6700", "A": "#1a7f37", "D": "#cf222e", "R": "#007a87",
-    "C": "#a92e6c", "T": "#5c6777", "U": "#b25e09",
+_STATUS_LIGHT = {  # same semantics on light paper (AA incl. mid-gray)
+    "M": "#835700", "A": "#146c2e", "D": "#ba1e28", "R": "#006772",
+    "C": "#a92e6c", "T": "#576171", "U": "#904b05",
 }
 _PILLS_DARK = {"head": "#56d364", "branch": "#e3b341", "tag": "#db61a2"}
-_PILLS_LIGHT = {"head": "#1a7f37", "branch": "#9a6700", "tag": "#a92e6c"}
+_PILLS_LIGHT = {"head": "#146c2e", "branch": "#835700", "tag": "#a92e6c"}
 
 
 def read_file_text(repo: str, sha: str, path: str) -> str:
