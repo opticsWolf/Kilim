@@ -122,6 +122,31 @@ def test_commit_files_lists_statuses(repo):
     assert files == [("A", "a.txt", None)]
 
 
+def test_commit_files_detects_renames(tmp_path, monkeypatch):
+    """Renames come back as one R row (not D+A), with the old path.
+
+    Rename detection is forced off via config so the test proves the
+    explicit -M flag (not ambient user settings) finds the rename."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "diff.renames")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    root = tmp_path / "ren"
+    root.mkdir()
+    _git(root, "init")
+    (root / "old.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
+    _git(root, "add", "old.py")
+    _git(root, "commit", "-m", "base")
+    (root / "old.py").rename(root / "new.py")
+    (root / "new.py").write_text("a = 1\nb = 2\nc = 3\nd = 5\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "rename")
+    rows, _, _ = read_history(str(root))
+    sha = next(r["sha"] for r in rows if r["subject"] == "rename")
+    files, err = read_commit_files(str(root), sha)
+    assert err is None
+    assert files == [("R", "new.py", "old.py")]
+
+
 def test_file_diff_unified_against_first_parent(repo):
     rows, _, _ = read_history(repo)
     by_subject = {r["subject"]: r for r in rows}

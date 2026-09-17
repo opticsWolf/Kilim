@@ -182,9 +182,11 @@ def read_commit_files(repo: str, sha: str) -> tuple[list[tuple[str, str, str | N
     """(files, error): (status, path, old_path) per changed file.
 
     First-parent diff, so merges show what they brought in and roots
-    show every file as added. R/C rows carry the old path too."""
+    show every file as added. R/C rows carry the old path too. -M is
+    explicit: rename detection must not depend on user git config."""
     try:
-        out = _run_git(repo, "show", "--name-status", "--format=", "--first-parent", sha, "--")
+        out = _run_git(repo, "show", "--name-status", "--format=",
+                       "--first-parent", "-M", sha, "--")
     except (OSError, subprocess.TimeoutExpired) as e:
         return [], f"git show failed: {e}"
     if out.returncode != 0:
@@ -207,7 +209,7 @@ def read_file_diff(repo: str, sha: str, parent: str | None, path: str) -> str:
     """Unified diff of one file in a commit (vs first parent / empty)."""
     base = parent or EMPTY_TREE
     try:
-        out = _run_git(repo, "diff", "--no-color", "--no-ext-diff", base, sha, "--", path)
+        out = _run_git(repo, "diff", "--no-color", "--no-ext-diff", "-M", base, sha, "--", path)
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"git diff failed: {e}"
     if out.returncode != 0:
@@ -925,20 +927,23 @@ class GitPane(QWidget):
         """Unified diff of one file (vs first parent, empty tree at root)."""
         if not self.repo or not (0 <= row < len(self._files)):
             return
-        _status, path, _old = self._files[row]
+        _status, path, old = self._files[row]
         parent = None
         for c in self._commits:
             if c["sha"] == self._selected_sha and c["parents"]:
                 parent = c["parents"][0]
                 break
         text = read_file_diff(self.repo, self._selected_sha, parent, path)
-        self._paint_diff(text, path, self._highlighted_sides(path, parent))
+        self._paint_diff(text, path, self._highlighted_sides(path, old, parent))
 
-    def _highlighted_sides(self, path: str, parent: str | None):
-        """(old_rows, new_rows): syntect spans per side, ([], []) when big."""
+    def _highlighted_sides(self, path: str, old: str | None, parent: str | None):
+        """(old_rows, new_rows): syntect spans per side, ([], []) when big.
+
+        Renames look up the old side under the old path (it never
+        existed under the new one)."""
         base = path.rsplit("/", 1)[-1]
         ext = base.rsplit(".", 1)[-1] if "." in base else ""
-        old_text = read_file_text(self.repo, parent or EMPTY_TREE, path)
+        old_text = read_file_text(self.repo, parent or EMPTY_TREE, old or path)
         new_text = read_file_text(self.repo, self._selected_sha, path)
         if max(len(old_text.splitlines()), len(new_text.splitlines())) > HIGHLIGHT_CAP:
             return [], []
