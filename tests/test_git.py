@@ -418,6 +418,51 @@ def test_git_follows_code_theme(scene, repo):
         app.processEvents()
 
 
+def test_git_colors_follow_theme(scene, repo):
+    """Dark/light paper swaps the lane, pill, and status ink sets."""
+    from kilim import list_themes, theme_background
+    from PySide6.QtGui import QColor
+
+    def lum(hexstr):
+        c = QColor(hexstr)
+        return 0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF()
+
+    layout, sidecar = scene
+    app, w = _window(layout, sidecar)
+    try:
+        w._open_git_dock(repo=repo)
+        pane = w.git_pane
+        papers = {n: theme_background(n) for n in list_themes()}
+        dark = next(n for n, p in papers.items() if p and lum(p) < 0.4)
+        light = next(n for n, p in papers.items() if p and lum(p) > 0.6)
+        seen = {}
+        for name in (dark, light):
+            w.apply_code_theme(name)
+            app.processEvents()
+            paper = QColor(theme_background(name))
+            seen[name] = (
+                pane._status["M"], pane._status["D"],
+                pane.graph._colors[0], pane.graph._pills["head"],
+            )
+            for ink in seen[name]:
+                assert abs(lum(ink.name()) - lum(paper.name())) > 0.15, name
+        assert seen[dark] != seen[light]
+        # Message header: sha in the link accent, rest dimmed (two spans).
+        doc = pane.msg_view.document()
+        block = doc.begin().next()
+        assert "·" in block.text()
+        it, frags = block.begin(), []
+        while not it.atEnd():
+            frags.append(it.fragment())
+            it += 1
+        assert len(frags) == 2
+        assert frags[0].charFormat().foreground().color() == pane._link
+        assert frags[1].charFormat().foreground().color() == pane._dim
+    finally:
+        w.close()
+        app.processEvents()
+
+
 def test_graph_paints_antialiased(monkeypatch):
     """The graph paint path enables AA for curves, dots, and text."""
     import kilim.git_pane as gp

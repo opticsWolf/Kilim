@@ -50,9 +50,13 @@ COMMIT_CAP = 300  # diff lines: capped, never a full huge patch
 HIGHLIGHT_CAP = 2000  # file lines per side: bigger keeps line colors
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # diff root vs this
 
-LANE_COLORS = [  # vivid per-lane inks (readable on dark and light paper)
+LANE_COLORS = [  # vivid per-lane inks for dark paper (default theme)
     "#4da3ff", "#4dd06a", "#ffbe3c", "#ff6b6b",
     "#c586ff", "#4dd6d6", "#ff8ad4", "#a3e635",
+]
+LANE_COLORS_LIGHT = [  # same hues, darkened for light paper
+    "#0b5fd0", "#0f7a3d", "#96590a", "#6d3bc7",
+    "#007a87", "#a92e6c", "#6e5a00", "#b32626",
 ]
 ROW_H = 24  # fixed row pitch: graph gutter + one text line
 LANE_W = 14  # lane column pitch in the gutter
@@ -226,10 +230,30 @@ def read_commit_body(repo: str, sha: str) -> str:
     return "\n".join(out.stdout.strip("\n").splitlines()[1:]).strip("\n")
 
 
-_STATUS_COLORS = {  # name-status letter -> file-list ink
-    "M": "yellow", "A": "brightgreen", "D": "red", "R": "cyan",
-    "C": "brightmagenta", "T": "gray", "U": "brightred",
+def _luminance(color) -> float:
+    """Perceived brightness 0..1 (picks the dark/light ink set)."""
+    return 0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF()
+
+
+def _mix(a, b, t: float):
+    """Linear blend of two inks (dimmed text = text mixed toward paper)."""
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+    )
+
+
+_STATUS_DARK = {  # name-status letter -> ink on dark paper
+    "M": "#e3b341", "A": "#56d364", "D": "#ff7b72", "R": "#39c5cf",
+    "C": "#db61a2", "T": "#9aa4b2", "U": "#ffa657",
 }
+_STATUS_LIGHT = {  # same semantics on light paper
+    "M": "#9a6700", "A": "#1a7f37", "D": "#cf222e", "R": "#007a87",
+    "C": "#a92e6c", "T": "#5c6777", "U": "#b25e09",
+}
+_PILLS_DARK = {"head": "#56d364", "branch": "#e3b341", "tag": "#db61a2"}
+_PILLS_LIGHT = {"head": "#1a7f37", "branch": "#9a6700", "tag": "#a92e6c"}
 
 
 def read_file_text(repo: str, sha: str, path: str) -> str:
@@ -330,6 +354,11 @@ class GraphView(QWidget):
         self._hover: int | None = None
         self._selected: str | None = None
         self._connected: set[str] = set()
+        self._colors = [QColor(c) for c in LANE_COLORS]
+        self._pills = {k: QColor(v) for k, v in _PILLS_DARK.items()}
+        self._text = QColor("#e6e9f0")
+        self._dim = QColor("#9aa4b2")
+        self._link = QColor(LANE_COLORS[0])
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFont(QFont("Cascadia Mono", 10))
@@ -460,25 +489,25 @@ class GraphView(QWidget):
         p.setRenderHint(QPainter.Antialiasing)  # curves, dots, rings, pills
         p.setRenderHint(QPainter.TextAntialiasing)
         fm = p.fontMetrics()
-        text_pen = self.palette().color(self.foregroundRole())
-        hl = self.palette().color(QPalette.Highlight)
         first = max(0, e.rect().top() // ROW_H - 1)
         last = min(len(self._rows), e.rect().bottom() // ROW_H + 2)
         for i in range(first, last):
-            self._paint_row(p, fm, text_pen, hl, i)
+            self._paint_row(p, fm, i)
 
     def _lane_x(self, j: int) -> int:
         return GUTTER_PAD + j * LANE_W
 
-    def _paint_row(self, p, fm, text_pen, hl, i: int):
+    def _paint_row(self, p, fm, i: int):
         row = self._rows[i]
         c = self._commits[i]
         y, cy = i * ROW_H, i * ROW_H + ROW_H // 2
         slot = row["slot"]
         if c["sha"] == self._selected:
-            p.fillRect(0, y, self.width(), ROW_H, QColor(hl).darker(115))
+            sel = QColor(self._link)
+            sel.setAlpha(70)
+            p.fillRect(0, y, self.width(), ROW_H, sel)
         elif i == self._hover:
-            faint = QColor(hl)
+            faint = QColor(self._link)
             faint.setAlpha(45)
             p.fillRect(0, y, self.width(), ROW_H, faint)
         top, bottom = row["top"], row["bottom"]
@@ -486,7 +515,7 @@ class GraphView(QWidget):
             x = self._lane_x(j)
             t = top[j] if j < len(top) else None
             b = bottom[j] if j < len(bottom) else None
-            col = QColor(LANE_COLORS[j % len(LANE_COLORS)])
+            col = self._colors[j % len(self._colors)]
             p.setPen(QPen(col, 2))
             if j == slot:
                 p.drawLine(x, y + 1, x, cy)
@@ -502,12 +531,12 @@ class GraphView(QWidget):
                 continue
             xs, xj = self._lane_x(s), self._lane_x(j)
             grad = QLinearGradient(xs, cy, xj, y + ROW_H)
-            grad.setColorAt(0.0, QColor(LANE_COLORS[s % len(LANE_COLORS)]))
-            grad.setColorAt(1.0, QColor(LANE_COLORS[j % len(LANE_COLORS)]))
+            grad.setColorAt(0.0, self._colors[s % len(self._colors)])
+            grad.setColorAt(1.0, self._colors[j % len(self._colors)])
             path = QPainterPath(QPointF(xs, cy))
             path.cubicTo(xs, cy + 8, xj, y + ROW_H - 8, xj, y + ROW_H - 1)
             p.strokePath(path, QPen(QBrush(grad), 2))
-        dot = QColor(LANE_COLORS[slot % len(LANE_COLORS)])
+        dot = QColor(self._colors[slot % len(self._colors)])
         p.setPen(QPen(dot.darker(130), 1))
         p.setBrush(QBrush(dot))
         p.drawEllipse(QPointF(self._lane_x(slot), cy), 4.5, 4.5)
@@ -520,18 +549,18 @@ class GraphView(QWidget):
         lanes = max(len(top), len(bottom))
         x = GUTTER_PAD + lanes * LANE_W + 8
         base = fm.ascent() + (ROW_H - fm.height()) // 2
-        p.setPen(QPen(text_pen))
+        p.setPen(QPen(self._text))
         p.drawText(x, y + base, c["subject"] or "(no message)")
         x += fm.horizontalAdvance(c["subject"] or "(no message)") + 6
         head, branches, tags = split_refs(c["refs"])
-        for name, color, bold in (
-            [(n, "brightgreen", True) for n in head]
-            + [(n, "yellow", False) for n in branches]
-            + [(f"tag: {n}", "brightmagenta", False) for n in tags]
+        for name, kind, bold in (
+            [(n, "head", True) for n in head]
+            + [(n, "branch", False) for n in branches]
+            + [(f"tag: {n}", "tag", False) for n in tags]
         ):
             w = fm.horizontalAdvance(name)
             pill_h = fm.height() + 2
-            pill = QColor(cell_qcolor(color, text_pen))
+            pill = QColor(self._pills[kind])
             fill = QColor(pill)
             fill.setAlpha(40)
             p.setPen(QPen(pill, 1))
@@ -545,10 +574,10 @@ class GraphView(QWidget):
             p.drawText(x + 6, y + base, name)
             if bold:
                 p.setFont(self.font())
-            p.setPen(QPen(text_pen))
+            p.setPen(QPen(self._text))
             x += w + 18
         meta = f"{c['author']} · {c['date'][:10]}"
-        p.setPen(QPen(cell_qcolor("gray", text_pen)))
+        p.setPen(QPen(self._dim))
         p.drawText(x, y + base, meta)
 
 
@@ -570,10 +599,15 @@ class GitPane(QWidget):
         self.on_repo_changed = None
         self._commits: list[dict] = []
         self._selected_sha: str | None = None
+        self._selected_idx: int | None = None
         self._files: list[tuple[str, str, str | None]] = []
         self._file_row: int | None = None
         self._ref = "--all"
         self._refresh_queued = False
+        self._status: dict[str, QColor] = {}
+        self._ink = QColor("#e6e9f0")
+        self._dim = QColor("#9aa4b2")
+        self._link = QColor(LANE_COLORS[0])
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -692,10 +726,12 @@ class GitPane(QWidget):
             keep = self._selected_sha if self._selected_sha in shas else rows[0]["sha"]
             i = next(k for k, c in enumerate(rows) if c["sha"] == keep)
             self._selected_sha = keep
+            self._selected_idx = i
             self.graph.select(keep)
             self._show_commit(i)
         else:
             self._selected_sha = None
+            self._selected_idx = None
             self.graph.select(None)
             self.msg_view.setPlainText("(no commits on this ref yet)")
             self._files_label.setText("Files")
@@ -759,8 +795,14 @@ class GitPane(QWidget):
 
     # ── paint ──
     def _apply_theme_paper(self):
-        """Full-bleed theme paper like FilePane (no widget-gray)."""
-        from kilim import theme_background
+        """Full-bleed theme paper like FilePane (no widget-gray).
+
+        Also refreshes every ink the dock paints with: lanes, pills,
+        status, text, dim, and link accent. All come from the theme
+        registry synchronously — never from widget palettes, which Lace
+        re-applies asynchronously and would otherwise win the race and
+        leave one-shot paints (message header, diff) stale."""
+        from kilim import theme_background, theme_foreground
 
         try:
             paper = theme_background(self.bridge.core.theme())
@@ -776,10 +818,27 @@ class GitPane(QWidget):
         pal.setColor(QPalette.Window, QColor(paper))
         self.graph.setPalette(pal)
         self.graph.setAutoFillBackground(True)
+        paper_q = QColor(paper)
+        dark = _luminance(paper_q) < 0.5
+        lanes = LANE_COLORS if dark else LANE_COLORS_LIGHT
+        self.graph._colors = [QColor(c) for c in lanes]
+        pills = _PILLS_DARK if dark else _PILLS_LIGHT
+        self.graph._pills = {k: QColor(v) for k, v in pills.items()}
+        inks = _STATUS_DARK if dark else _STATUS_LIGHT
+        self._status = {k: QColor(v) for k, v in inks.items()}
+        self._link = QColor(lanes[0])
+        if fg := theme_foreground(self.bridge.core.theme()):
+            self._ink = QColor(fg)
+        self._dim = _mix(self._ink, paper_q, 0.45)
+        self.graph._text = QColor(self._ink)
+        self.graph._dim = QColor(self._dim)
+        self.graph._link = QColor(self._link)
+        self.graph.update()
 
     def _show_note(self, text: str):
         self._commits = []
         self._selected_sha = None
+        self._selected_idx = None
         self._more_label.setText("")
         self.graph.set_commits([])
         self.msg_view.setPlainText(text)
@@ -791,32 +850,35 @@ class GitPane(QWidget):
     def _pick_commit(self, i: int):
         if 0 <= i < len(self._commits):
             self._selected_sha = self._commits[i]["sha"]
+            self._selected_idx = i
             self.graph.select(self._selected_sha)
             self._show_commit(i)
+
+    def _show_message(self, i: int):
+        """Message header alone (theme refresh repaints Link/dim inks)."""
+        c = self._commits[i]
+        body = read_commit_body(self.repo, c["sha"])
+        view = self.msg_view
+        cur = QTextCursor(view.document())
+        cur.beginEditBlock()
+        try:
+            view.clear()
+            self._span(cur, c["subject"] or "(no message)", self._ink, self._ink, bold=True)
+            cur.insertBlock()
+            self._span(cur, c["sha"][:12], self._link, self._ink)
+            self._span(cur, f" · {c['author']} · {c['date'][:10]}", self._dim, self._ink)
+            if body:
+                cur.insertBlock()
+                self._span(cur, body, self._ink, self._ink)
+        finally:
+            cur.endEditBlock()
 
     def _show_commit(self, i: int):
         """Message header + file list; the first file's diff shows at once."""
         if not self.repo or not (0 <= i < len(self._commits)):
             return
+        self._show_message(i)
         c = self._commits[i]
-        body = read_commit_body(self.repo, c["sha"])
-        view = self.msg_view
-        fg0 = view.palette().color(view.foregroundRole())
-        cur = QTextCursor(view.document())
-        cur.beginEditBlock()
-        try:
-            view.clear()
-            self._span(cur, c["subject"] or "(no message)", "default", fg0, bold=True)
-            cur.insertBlock()
-            self._span(
-                cur, f"{c['sha'][:12]} · {c['author']} · {c['date'][:10]}",
-                "gray", fg0,
-            )
-            if body:
-                cur.insertBlock()
-                self._span(cur, body, "default", fg0)
-        finally:
-            cur.endEditBlock()
         files, err = read_commit_files(self.repo, c["sha"])
         self._files = files if err is None else []
         self.files_list.clear()
@@ -828,11 +890,10 @@ class GitPane(QWidget):
             self.diff_view.clear()
             return
         self._files_label.setText(f"Files ({len(files)})")
-        fg = self.files_list.palette().color(self.files_list.foregroundRole())
         for status, path, old in files:
             label = f"{status}  {old} → {path}" if old else f"{status}  {path}"
             item = QListWidgetItem(label)
-            item.setForeground(cell_qcolor(_STATUS_COLORS.get(status, "default"), fg))
+            item.setForeground(QBrush(self._status.get(status, self._ink)))
             self.files_list.addItem(item)
         if files:
             self.files_list.setCurrentRow(0)  # fires _on_file_picked -> diff
@@ -844,8 +905,13 @@ class GitPane(QWidget):
             self.diff_view.clear()
 
     def refresh_theme(self):
-        """Theme switch: re-apply paper + re-highlight the open diff."""
+        """Theme switch: re-paper, repaint header, re-highlight diff."""
         self._apply_theme_paper()
+        idx = self._selected_idx
+        if (self._selected_sha is not None and idx is not None
+                and 0 <= idx < len(self._commits)
+                and self._commits[idx]["sha"] == self._selected_sha):
+            self._show_message(idx)
         if self._selected_sha is not None and self._file_row is not None:
             self._show_file(self._file_row)
         self.graph.update()
@@ -884,9 +950,9 @@ class GitPane(QWidget):
         return old_rows, new_rows
 
     @staticmethod
-    def _span(cur, text: str, color: str, fg0, bold: bool = False):
+    def _span(cur, text: str, color, fg0, bold: bool = False):
         fmt = QTextCharFormat()
-        fmt.setForeground(cell_qcolor(color, fg0))
+        fmt.setForeground(color if isinstance(color, QColor) else cell_qcolor(color, fg0))
         if bold:
             fmt.setFontWeight(QFont.Bold)
         cur.insertText(text, fmt)
@@ -901,7 +967,6 @@ class GitPane(QWidget):
         """
         old_rows, new_rows = sides
         view = self.diff_view
-        fg0 = view.palette().color(view.foregroundRole())
         cur = QTextCursor(view.document())
         cur.beginEditBlock()
         try:
@@ -924,7 +989,7 @@ class GitPane(QWidget):
                     new_no += 1
                 for chunk, color, bold, bg in chunks:
                     fmt = QTextCharFormat()
-                    fmt.setForeground(cell_qcolor(color, fg0))
+                    fmt.setForeground(color)
                     if bold:
                         fmt.setFontWeight(QFont.Bold)
                     if bg is not None:
@@ -933,28 +998,30 @@ class GitPane(QWidget):
         finally:
             cur.endEditBlock()
 
-    @staticmethod
-    def _diff_chunks(line, old_rows, new_rows, old_no, new_no):
-        """One diff line -> (text, color, bold, bg) chunks."""
+    def _diff_chunks(self, line, old_rows, new_rows, old_no, new_no):
+        """One diff line -> (text, QColor, bold, bg) chunks, theme-aware."""
+        ink = self._status.get
         if line.startswith("@@"):
-            return [(line or " ", "cyan", True, None)]
+            return [(line or " ", ink("R", self._ink), True, None)]
         if line.startswith(("diff --git", "index ", "--- ", "+++ ",
                             "new file", "deleted", "similarity",
                             "rename ", "old mode", "new mode")):
-            return [(line or " ", "default", True, None)]
+            return [(line or " ", self._ink, True, None)]
         if line.startswith("\\"):
-            return [(line or " ", "gray", False, None)]
+            return [(line or " ", self._dim, False, None)]
+        add, delete = ink("A", self._ink), ink("D", self._ink)
         if line.startswith("+") and not line.startswith("+++"):
-            rows, no = new_rows, new_no
-            color, wash = "brightgreen", QColor(80, 255, 80, 26)
+            rows, no, color = new_rows, new_no, add
+            wash = QColor(color)
+            wash.setAlpha(26)
         elif line.startswith("-") and not line.startswith("---"):
-            rows, no = old_rows, old_no
-            color, wash = "brightred", QColor(255, 80, 80, 30)
+            rows, no, color = old_rows, old_no, delete
+            wash = QColor(color)
+            wash.setAlpha(30)
         elif line.startswith(" "):
-            rows, no = new_rows, new_no
-            color, wash = "default", None
+            rows, no, color, wash = new_rows, new_no, self._ink, None
         else:
-            return [(line or " ", "default", False, None)]
+            return [(line or " ", self._ink, False, None)]
         marker, code = line[:1], line[1:]
         chunks = [(marker, color, True, wash)]
         spans = rows[no - 1] if 1 <= no <= len(rows) else []
@@ -962,7 +1029,7 @@ class GitPane(QWidget):
             for text, fg, _bg in spans:
                 text = text.rstrip("\r\n")  # syntect keeps line endings
                 if text:
-                    chunks.append((text, fg, False, wash))
+                    chunks.append((text, cell_qcolor(fg, self._ink), False, wash))
         else:
             chunks.append((code, color, False, wash))
         return chunks
