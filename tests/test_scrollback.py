@@ -1736,6 +1736,76 @@ def test_pane_live_dir_survives_restart(tmp_path):
         app.processEvents()
 
 
+def test_menu_start_dir_survives_close_reopen(tmp_path):
+    """Menu-set Start Directory persists across a real close/reopen.
+
+    Guards the sidecar rewrite at close (perspectives.save drops unknown
+    keys): shell_cwds must be re-stashed, and the configured dir must
+    beat the saved live dir on the fresh start."""
+    import json
+    import os
+    import time
+    from pathlib import Path as _Path
+    from unittest.mock import patch
+
+    from kilim.qt_app import KilimWindow
+    from PySide6.QtWidgets import QApplication
+
+    def norm(p):
+        return os.path.normcase(os.path.normpath(p))
+
+    target = tmp_path / "work"
+    target.mkdir()
+    base = json.loads(_Path("layouts/default.json").read_text(encoding="utf-8"))
+    layout_path = tmp_path / "k.json"
+    layout_path.write_text(json.dumps(base), encoding="utf-8")
+    sidecar_path = tmp_path / "k.perspective.json"
+
+    app = QApplication.instance() or QApplication([])
+    w1 = KilimWindow(str(layout_path), str(sidecar_path))
+    w1.show()
+    try:
+        label = w1._resolve_shell_label({"title": "shell", "kind": "term"})
+        assert label, "default pane must resolve to a menu shell"
+
+        def shell_menu():
+            start = next(
+                a.menu() for a in w1.titleBar.terminal_menu.actions()
+                if a.text() == "Start Directory"
+            )
+            return next(a.menu() for a in start.actions() if a.text() == label)
+
+        acts = {a.text(): a for a in shell_menu().actions()}
+        with patch(
+            "PySide6.QtWidgets.QFileDialog.getExistingDirectory",
+            return_value=str(target),
+        ):
+            acts["Choose\u2026"].trigger()
+        assert w1._shell_dir_spec(label) == {"mode": "custom", "dir": str(target)}
+    finally:
+        w1.close()
+        app.processEvents()
+    side = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert side["shell_cwds"][label] == {"mode": "custom", "dir": str(target)}
+    # Fresh start applies the menu setting (over the saved live dir).
+    w2 = KilimWindow(str(layout_path), str(sidecar_path))
+    w2.show()
+    try:
+        deadline = time.time() + 30
+        live = None
+        while time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.5)
+            snap = w2.bridge.call(lambda: w2.bridge.core.snapshot_term("term1", 1, None))
+            live = snap[6] if len(snap) > 6 else None
+            if live and norm(live) == norm(str(target)):
+                break
+        assert live and norm(live) == norm(str(target)), live
+    finally:
+        w2.close()
+        app.processEvents()
+
+
 def test_cmdless_pane_resolves_to_platform_default():
     """A layout term with no cmd maps to the core platform-default shell.
 

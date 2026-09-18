@@ -526,28 +526,28 @@ class KilimWindow(FramelessLaceMainWindow):
     def _stamp_layout_cwds(self, panes: dict) -> None:
         """Stamp start dirs onto layout term panes (pre-spawn).
 
-        A saved live dir wins (exact session restore); otherwise the
-        resolved per-shell dir; otherwise the layout cwd (inherit).
-        Missing dirs fall through the chain, never a broken start."""
+        A configured per-shell dir always wins (the menu setting must
+        apply unconditionally); otherwise a saved live dir restores the
+        session; otherwise the layout cwd (inherit). Missing dirs fall
+        through the chain, never a broken start."""
         from pathlib import Path
 
         for pid, p in panes.items():
             if not isinstance(p, dict) or p.get("kind") != "term":
                 continue
+            label = self._resolve_shell_label(p)
+            if label is not None:
+                cwd = self._shell_cwd_arg(label)
+                if cwd:
+                    try:
+                        self.bridge.core.set_pane_cwd(pid, cwd)
+                        continue
+                    except Exception:  # noqa: BLE001 - fall through to saved
+                        pass
             saved = self.pane_cwds.get(pid)
             if saved and Path(saved).is_dir():
                 try:
                     self.bridge.core.set_pane_cwd(pid, saved)
-                    continue
-                except Exception:  # noqa: BLE001 - fall through to shell
-                    pass
-            label = self._resolve_shell_label(p)
-            if label is None:
-                continue
-            cwd = self._shell_cwd_arg(label)
-            if cwd:
-                try:
-                    self.bridge.core.set_pane_cwd(pid, cwd)
                 except Exception:  # noqa: BLE001 - spawn falls back to layout cwd
                     pass
 
@@ -1221,12 +1221,19 @@ class KilimWindow(FramelessLaceMainWindow):
     def _persist_perspective(self):
         """Write the current arrangement + session extras to the sidecar."""
         perspectives.save(self.perspective_path, perspectives.capture(self))
-        # save() rewrites the sidecar: re-stash the keys it doesn't know.
-        extras = {"file_history": self.file_history}
+        # save() rewrites the sidecar: re-stash the keys it doesn't know
+        # (shell_cwds set via the menu would otherwise die at every close).
+        extras = {
+            "file_history": self.file_history,
+            "shell_cwds": self.shell_cwds,
+            "git_open": self.git_pane is not None,
+        }
         if self.lace_theme:
             extras["lace_theme"] = self.lace_theme
         if self.default_shell:
             extras["default_shell"] = self.default_shell[0]
+        if self.git_pane is not None and self.git_pane.repo:
+            extras["git_repo"] = self.git_pane.repo
         self._save_sidecar(**extras)
 
     def pane_of(self, dock) -> str:
